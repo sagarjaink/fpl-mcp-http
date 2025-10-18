@@ -79,22 +79,33 @@ async def auth_fetch(endpoint: str) -> Dict:
                 "app": "plfpl-web",
                 "redirect_uri": "https://fantasy.premierleague.com/a/login"
             }
-            response = await client.post(FPL_LOGIN, data=auth_data)
-            if response.status_code == 200:
-                _auth_cookies = dict(response.cookies)
-                logger.info("FPL authentication successful")
+            # Follow redirects to complete login
+            response = await client.post(FPL_LOGIN, data=auth_data, follow_redirects=True)
+            
+            # Store cookies from the response
+            _auth_cookies = dict(response.cookies)
+            
+            if _auth_cookies:
+                logger.info("FPL authentication successful - cookies obtained")
+            else:
+                logger.warning("FPL login completed but no cookies received")
+                
         except Exception as e:
             logger.error(f"Auth failed: {e}")
-            return {"error": "Authentication failed"}
+            return {"error": f"Authentication failed: {str(e)}"}
     
     # Make authenticated request
     if _auth_cookies:
-        client = await get_client()
-        response = await client.get(f"{FPL_API}/{endpoint}", cookies=_auth_cookies)
-        response.raise_for_status()
-        return response.json()
+        try:
+            client = await get_client()
+            response = await client.get(f"{FPL_API}/{endpoint}", cookies=_auth_cookies)
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.error(f"Authenticated request failed: {e}")
+            return {"error": f"Request failed: {str(e)}"}
     
-    return {"error": "Not authenticated"}
+    return {"error": "Not authenticated - credentials not configured"}
 
 
 # ====================================================================================
@@ -617,23 +628,41 @@ async def analyze_fixtures(
 
 @mcp.tool()
 async def get_my_team_details() -> Dict[str, Any]:
-    """Get your team info (requires FPL_TEAM_ID)"""
+    """Get your team info (requires FPL_TEAM_ID, FPL_EMAIL, FPL_PASSWORD)"""
     if not FPL_TEAM_ID:
-        return {"error": "FPL_TEAM_ID not configured"}
+        return {"error": "FPL_TEAM_ID not configured in environment variables"}
+    
+    if not FPL_EMAIL or not FPL_PASSWORD:
+        return {"error": "FPL_EMAIL and FPL_PASSWORD required for authentication"}
     
     try:
         team = await auth_fetch(f"entry/{FPL_TEAM_ID}/")
+        
+        if "error" in team:
+            return team  # Return the error as-is
+        
+        # Check if we got valid data
+        if not team.get("name"):
+            return {
+                "error": "Authentication succeeded but received empty data - check if team ID is correct",
+                "team_id": FPL_TEAM_ID
+            }
+        
         return {
             "team_name": team.get("name"),
-            "manager": f"{team.get('player_first_name')} {team.get('player_last_name')}",
+            "manager": f"{team.get('player_first_name', '')} {team.get('player_last_name', '')}".strip(),
             "overall_rank": team.get("summary_overall_rank"),
             "overall_points": team.get("summary_overall_points"),
             "gameweek_points": team.get("summary_event_points"),
             "team_value": team.get("last_deadline_value", 0) / 10,
-            "bank": team.get("last_deadline_bank", 0) / 10
+            "bank": team.get("last_deadline_bank", 0) / 10,
+            "total_transfers": team.get("total_transfers"),
+            "team_id": FPL_TEAM_ID
         }
     except Exception as e:
+        logger.error(f"Failed to fetch team: {e}", exc_info=True)
         return {"error": f"Failed to fetch team: {str(e)}"}
+
 
 
 @mcp.tool()
@@ -762,21 +791,42 @@ async def check_fpl_authentication() -> Dict[str, Any]:
     if not FPL_EMAIL or not FPL_PASSWORD or not FPL_TEAM_ID:
         return {
             "authenticated": False,
-            "message": "Credentials not configured. Set FPL_EMAIL, FPL_PASSWORD, FPL_TEAM_ID"
+            "message": "Credentials not fully configured",
+            "missing": [
+                k for k, v in {
+                    "FPL_EMAIL": FPL_EMAIL,
+                    "FPL_PASSWORD": FPL_PASSWORD,
+                    "FPL_TEAM_ID": FPL_TEAM_ID
+                }.items() if not v
+            ]
         }
     
     try:
         team = await auth_fetch(f"entry/{FPL_TEAM_ID}/")
+        
         if "error" in team:
-            return {"authenticated": False, "error": team["error"]}
+            return {
+                "authenticated": False,
+                "error": team["error"],
+                "credentials_configured": True,
+                "team_id": FPL_TEAM_ID
+            }
         
         return {
             "authenticated": True,
             "team_name": team.get("name"),
-            "manager": f"{team.get('player_first_name')} {team.get('player_last_name')}"
+            "manager": f"{team.get('player_first_name')} {team.get('player_last_name')}",
+            "team_id": FPL_TEAM_ID,
+            "overall_rank": team.get("summary_overall_rank"),
+            "overall_points": team.get("summary_overall_points")
         }
     except Exception as e:
-        return {"authenticated": False, "error": str(e)}
+        logger.error(f"Auth check failed: {e}", exc_info=True)
+        return {
+            "authenticated": False,
+            "error": str(e),
+            "credentials_configured": True
+        }
 
 
 # ====================================================================================
