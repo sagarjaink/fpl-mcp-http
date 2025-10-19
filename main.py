@@ -1,15 +1,17 @@
 """
-Fantasy Premier League MCP Server - Complete Cloud Run Implementation
+Fantasy Premier League MCP Server - Cloud Run Edition
 All 14 tools + 12 resources + authentication
 Built with fastmcp 2.9.2 for HTTP transport
 """
 
 import os
 import logging
+import asyncio
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 from collections import Counter
 import httpx
+import requests
 from fastmcp import FastMCP
 
 # Logging
@@ -33,7 +35,8 @@ FPL_TEAM_ID = os.getenv("FPL_TEAM_ID")
 _cache: Dict[str, tuple[datetime, Any]] = {}
 CACHE_TTL = timedelta(hours=1)
 _http_client: Optional[httpx.AsyncClient] = None
-_auth_cookies: Optional[Dict] = None
+_auth_session: Optional[requests.Session] = None
+_last_auth_time: Optional[datetime] = None
 
 
 # ====================================================================================
@@ -66,46 +69,69 @@ async def fetch(endpoint: str, use_cache: bool = True) -> Dict:
 
 
 async def auth_fetch(endpoint: str) -> Dict:
-    """Fetch authenticated endpoint"""
-    global _auth_cookies
+    """Fetch authenticated endpoint using requests.Session (like original package)"""
+    global _auth_session, _last_auth_time
     
-    # Authenticate if needed
-    if not _auth_cookies and FPL_EMAIL and FPL_PASSWORD:
+    # Re-authenticate if needed
+    if _auth_session is None or (_last_auth_time and datetime.now() - _last_auth_time > timedelta(hours=2)):
+        if not FPL_EMAIL or not FPL_PASSWORD:
+            return {"error": "FPL_EMAIL and FPL_PASSWORD required"}
+        
         try:
-            client = await get_client()
-            auth_data = {
+            # Create new session
+            _auth_session = requests.Session()
+            
+            headers = {
+                "User-Agent": USER_AGENT,
+                "accept-language": "en"
+            }
+            
+            data = {
                 "login": FPL_EMAIL,
                 "password": FPL_PASSWORD,
                 "app": "plfpl-web",
                 "redirect_uri": "https://fantasy.premierleague.com/a/login"
             }
-            # Follow redirects to complete login
-            response = await client.post(FPL_LOGIN, data=auth_data, follow_redirects=True)
             
-            # Store cookies from the response
-            _auth_cookies = dict(response.cookies)
+            # Run synchronous POST in executor (EXACTLY like original)
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: _auth_session.post(FPL_LOGIN, data=data, headers=headers)
+            )
             
-            if _auth_cookies:
-                logger.info("FPL authentication successful - cookies obtained")
+            logger.info(f"Auth response: {response.status_code}")
+            
+            if 200 <= response.status_code < 400:
+                _last_auth_time = datetime.now()
+                logger.info("Authentication successful")
             else:
-                logger.warning("FPL login completed but no cookies received")
+                _auth_session = None
+                return {"error": f"Auth failed: HTTP {response.status_code}"}
                 
         except Exception as e:
-            logger.error(f"Auth failed: {e}")
-            return {"error": f"Authentication failed: {str(e)}"}
+            logger.error(f"Auth error: {e}")
+            _auth_session = None
+            return {"error": str(e)}
     
     # Make authenticated request
-    if _auth_cookies:
+    if _auth_session:
         try:
-            client = await get_client()
-            response = await client.get(f"{FPL_API}/{endpoint}", cookies=_auth_cookies)
+            # Run synchronous GET in executor (EXACTLY like original)
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: _auth_session.get(f"{FPL_API}/{endpoint}")
+            )
+            
             response.raise_for_status()
             return response.json()
+            
         except Exception as e:
-            logger.error(f"Authenticated request failed: {e}")
-            return {"error": f"Request failed: {str(e)}"}
+            logger.error(f"Request failed: {e}")
+            return {"error": str(e)}
     
-    return {"error": "Not authenticated - credentials not configured"}
+    return {"error": "Not authenticated"}
 
 
 # ====================================================================================
