@@ -404,7 +404,7 @@ async def compare_players(
         for name, player in found_players.items():
             if metric in player:
                 try:
-                    value = float(player[metric]) if metric == "now_cost" else player[metric]
+                    value = float(player[metric])
                 except (ValueError, TypeError):
                     value = player[metric]
                 metric_values[name] = value
@@ -550,20 +550,20 @@ async def analyze_players(
         # Form filter
         if form_threshold:
             try:
-                if float(p.get("form", 0)) < form_threshold:
+                if float(p.get("form") or 0) < form_threshold:
                     continue
-            except:
+            except (ValueError, TypeError):
                 continue
 
         # Ownership filters (Phase 2 enhancement)
         if min_ownership or max_ownership:
             try:
-                ownership = float(p["selected_by_percent"])
+                ownership = float(p.get("selected_by_percent", 0))
                 if min_ownership and ownership < min_ownership:
                     continue
                 if max_ownership and ownership > max_ownership:
                     continue
-            except:
+            except (ValueError, TypeError):
                 continue
 
         filtered.append({
@@ -572,9 +572,9 @@ async def analyze_players(
             "team": teams_data[p["team"]]["name"],
             "position": ["GKP", "DEF", "MID", "FWD"][p["element_type"] - 1],
             "price": price,
-            "points": p["total_points"],
+            "total_points": p["total_points"],
             "form": p["form"],
-            "ownership": f"{p['selected_by_percent']}%",
+            "ownership": float(p.get("selected_by_percent", 0)),
             "goals": p["goals_scored"],
             "assists": p["assists"],
             "expected_goals": p.get("expected_goals", "0"),
@@ -582,14 +582,18 @@ async def analyze_players(
         })
 
     # Sort
-    try:
-        filtered.sort(key=lambda x: float(x.get(sort_by, 0)) if isinstance(x.get(sort_by), (int, float, str)) and str(x.get(sort_by)).replace('.', '').isdigit() else 0, reverse=True)
-    except:
-        filtered.sort(key=lambda x: x.get("points", 0), reverse=True)
+    def safe_sort_key(x):
+        val = x.get(sort_by, 0)
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            return 0
+
+    filtered.sort(key=safe_sort_key, reverse=True)
 
     # Calculate summary statistics
     total = len(filtered)
-    avg_points = sum(x["points"] for x in filtered) / max(1, total)
+    avg_points = sum(x["total_points"] for x in filtered) / max(1, total)
     avg_price = sum(x["price"] for x in filtered) / max(1, total)
 
     position_counts = Counter(x["position"] for x in filtered)
@@ -818,7 +822,7 @@ async def analyze_fixtures(
         team_fixtures = [
             f for f in fixtures
             if (f["team_h"] == team_id or f["team_a"] == team_id) and
-               f.get("event") and current_gw <= f["event"] <= current_gw + num_gameweeks
+               f.get("event") and current_gw < f["event"] <= current_gw + num_gameweeks
         ]
 
         results = []
@@ -1012,7 +1016,7 @@ async def get_my_team(gameweek: Optional[int] = None) -> Dict[str, Any]:
             formatted_picks.append({
                 "id": player_id,
                 "position_order": pick["position"],
-                "multiplier": pick["multiplier"],
+                "multiplier": pick.get("multiplier", 0),
                 "is_captain": pick.get("is_captain", False),
                 "is_vice_captain": pick.get("is_vice_captain", False),
 
@@ -1118,7 +1122,7 @@ async def get_team(team_id: int, gameweek: Optional[int] = None) -> Dict[str, An
             formatted_picks.append({
                 "id": player_id,
                 "position_order": pick["position"],
-                "multiplier": pick["multiplier"],
+                "multiplier": pick.get("multiplier", 0),
                 "is_captain": pick.get("is_captain", False),
                 "is_vice_captain": pick.get("is_vice_captain", False),
                 "web_name": player_data["web_name"],
