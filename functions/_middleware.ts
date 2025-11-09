@@ -107,6 +107,9 @@ async function handleMCP(request: Request, env: Env): Promise<Response> {
     const body = await request.json();
     const { method, params, id } = body;
 
+    // Log incoming requests for debugging
+    console.log("MCP Request:", { method, params, id });
+
     // Handle MCP methods
     switch (method) {
       case "initialize":
@@ -186,10 +189,20 @@ async function handleMCP(request: Request, env: Env): Promise<Response> {
         return await handleToolCall(params.name, params.arguments || {}, env, id);
 
       default:
-        return jsonResponse({ error: "Method not supported" }, 400);
+        console.log("Unknown method:", method);
+        return jsonResponse({
+          jsonrpc: "2.0",
+          id,
+          error: { code: -32601, message: `Method not supported: ${method}` }
+        }, 400);
     }
   } catch (error: any) {
-    return jsonResponse({ error: error.message }, 500);
+    console.error("MCP Error:", error);
+    return jsonResponse({
+      jsonrpc: "2.0",
+      id: null,
+      error: { code: -32700, message: error.message }
+    }, 500);
   }
 }
 
