@@ -350,12 +350,17 @@ async function getMyTeamDetails(env: Env): Promise<Response> {
 }
 
 /**
- * Helper: JSON response
+ * Helper: JSON response with CORS headers
  */
 function jsonResponse(data: any, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    },
   });
 }
 
@@ -366,6 +371,18 @@ export const onRequest: PagesFunction<Env> = async (context) => {
   const { request, env } = context;
   const url = new URL(request.url);
 
+  // Handle CORS preflight requests
+  if (request.method === "OPTIONS") {
+    return new Response(null, {
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization",
+        "Access-Control-Max-Age": "86400",
+      },
+    });
+  }
+
   // Handle MCP endpoint
   if (url.pathname === "/mcp" && request.method === "POST") {
     return handleMCP(request, env);
@@ -374,7 +391,10 @@ export const onRequest: PagesFunction<Env> = async (context) => {
   // Health check
   if (url.pathname === "/" || url.pathname === "/health") {
     return new Response("FPL MCP Server - Cloudflare Pages Edition ✓", {
-      headers: { "Content-Type": "text/plain" },
+      headers: {
+        "Content-Type": "text/plain",
+        "Access-Control-Allow-Origin": "*",
+      },
     });
   }
 
