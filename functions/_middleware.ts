@@ -178,13 +178,137 @@ async function handleMCP(request: Request, env: Env): Promise<Response> {
                 },
               },
               {
+                name: "compare_players",
+                description: "Compare multiple players across various metrics",
+                inputSchema: {
+                  type: "object",
+                  properties: {
+                    player_names: { type: "array", items: { type: "string" }, description: "2-5 player names" },
+                    include_fixtures: { type: "boolean", description: "Include fixture analysis" },
+                  },
+                  required: ["player_names"],
+                },
+              },
+              {
+                name: "analyze_players",
+                description: "Filter and analyze players by position, team, price, form, etc.",
+                inputSchema: {
+                  type: "object",
+                  properties: {
+                    position: { type: "string", description: "Position (GKP/DEF/MID/FWD)" },
+                    team: { type: "string", description: "Team name" },
+                    min_price: { type: "number", description: "Minimum price" },
+                    max_price: { type: "number", description: "Maximum price" },
+                    sort_by: { type: "string", description: "Sort by metric" },
+                    limit: { type: "number", description: "Max results (default 20)" },
+                  },
+                },
+              },
+              {
                 name: "get_gameweek_status",
-                description: "Get current gameweek information",
+                description: "Get current, previous, and next gameweek information",
                 inputSchema: { type: "object", properties: {} },
               },
               {
-                name: "get_my_team_details",
-                description: "Get your FPL team details (requires auth)",
+                name: "analyze_player_fixtures",
+                description: "Analyze upcoming fixtures for a specific player",
+                inputSchema: {
+                  type: "object",
+                  properties: {
+                    player_name: { type: "string", description: "Player name" },
+                    num_fixtures: { type: "number", description: "Number of fixtures (default 5)" },
+                  },
+                  required: ["player_name"],
+                },
+              },
+              {
+                name: "get_blank_gameweeks",
+                description: "Identify upcoming blank gameweeks and affected teams",
+                inputSchema: {
+                  type: "object",
+                  properties: {
+                    num_gameweeks: { type: "number", description: "Number to check (default 5)" },
+                  },
+                },
+              },
+              {
+                name: "get_double_gameweeks",
+                description: "Identify upcoming double gameweeks and teams playing twice",
+                inputSchema: {
+                  type: "object",
+                  properties: {
+                    num_gameweeks: { type: "number", description: "Number to check (default 5)" },
+                  },
+                },
+              },
+              {
+                name: "analyze_fixtures",
+                description: "Analyze fixtures for teams, players, or positions",
+                inputSchema: {
+                  type: "object",
+                  properties: {
+                    team: { type: "string", description: "Team name" },
+                    num_fixtures: { type: "number", description: "Number of fixtures (default 5)" },
+                  },
+                },
+              },
+              {
+                name: "get_my_team",
+                description: "Get your FPL team for a specific gameweek (requires auth)",
+                inputSchema: {
+                  type: "object",
+                  properties: {
+                    gameweek: { type: "number", description: "Gameweek number (optional)" },
+                  },
+                },
+              },
+              {
+                name: "get_team",
+                description: "Get any FPL team by ID (requires auth)",
+                inputSchema: {
+                  type: "object",
+                  properties: {
+                    team_id: { type: "number", description: "FPL team ID" },
+                    gameweek: { type: "number", description: "Gameweek number (optional)" },
+                  },
+                  required: ["team_id"],
+                },
+              },
+              {
+                name: "get_manager_info",
+                description: "Get manager profile and league information (requires auth)",
+                inputSchema: {
+                  type: "object",
+                  properties: {
+                    team_id: { type: "number", description: "FPL team ID (optional)" },
+                  },
+                },
+              },
+              {
+                name: "get_team_history",
+                description: "Get historical performance over gameweeks (requires auth)",
+                inputSchema: {
+                  type: "object",
+                  properties: {
+                    team_id: { type: "number", description: "FPL team ID (optional)" },
+                    num_gameweeks: { type: "number", description: "Number of gameweeks (default 5)" },
+                  },
+                },
+              },
+              {
+                name: "get_league_standings",
+                description: "Get league standings and rankings (requires auth)",
+                inputSchema: {
+                  type: "object",
+                  properties: {
+                    league_id: { type: "number", description: "League ID" },
+                  },
+                  required: ["league_id"],
+                },
+              },
+              {
+                name: "check_fpl_authentication",
+                description: "Test if FPL credentials are working",
                 inputSchema: { type: "object", properties: {} },
               },
             ],
@@ -327,8 +451,56 @@ async function handleToolCall(toolName: string, args: any, env: Env, id: any): P
         result = await searchPlayer(args.query);
         break;
 
+      case "compare_players":
+        result = await comparePlayers(args.player_names, args.include_fixtures);
+        break;
+
+      case "analyze_players":
+        result = await analyzePlayers(args);
+        break;
+
       case "get_gameweek_status":
         result = await getGameweekStatus();
+        break;
+
+      case "analyze_player_fixtures":
+        result = await analyzePlayerFixtures(args.player_name, args.num_fixtures || 5);
+        break;
+
+      case "get_blank_gameweeks":
+        result = await getBlankGameweeks(args.num_gameweeks || 5);
+        break;
+
+      case "get_double_gameweeks":
+        result = await getDoubleGameweeks(args.num_gameweeks || 5);
+        break;
+
+      case "analyze_fixtures":
+        result = await analyzeFixtures(args.team, args.num_fixtures || 5);
+        break;
+
+      case "get_my_team":
+        result = await getMyTeam(env, args.gameweek);
+        break;
+
+      case "get_team":
+        result = await getTeam(env, args.team_id, args.gameweek);
+        break;
+
+      case "get_manager_info":
+        result = await getManagerInfo(env, args.team_id);
+        break;
+
+      case "get_team_history":
+        result = await getTeamHistory(env, args.team_id, args.num_gameweeks || 5);
+        break;
+
+      case "get_league_standings":
+        result = await getLeagueStandings(env, args.league_id);
+        break;
+
+      case "check_fpl_authentication":
+        result = await checkFPLAuthentication(env);
         break;
 
       case "get_my_team_details":
@@ -404,6 +576,331 @@ async function getMyTeamDetails(env: Env): Promise<any> {
       },
     ],
   };
+}
+
+/**
+ * Tool: Compare players
+ */
+async function comparePlayers(playerNames: string[], includeFixtures = true): Promise<any> {
+  if (!playerNames || playerNames.length < 2) {
+    throw new Error("Please provide at least 2 player names");
+  }
+  if (playerNames.length > 5) {
+    throw new Error("Maximum 5 players can be compared");
+  }
+
+  const data = await fetchFPL("bootstrap-static/");
+  const players = data.elements;
+  const teams = data.teams.reduce((acc: any, t: any) => ({ ...acc, [t.id]: t }), {});
+
+  const foundPlayers: any[] = [];
+  for (const name of playerNames) {
+    const player = players.find((p: any) =>
+      p.web_name.toLowerCase().includes(name.toLowerCase())
+    );
+    if (!player) {
+      throw new Error(`Player not found: ${name}`);
+    }
+    foundPlayers.push(player);
+  }
+
+  const comparison = foundPlayers.map((p: any) => ({
+    name: p.web_name,
+    team: teams[p.team].name,
+    position: ["GKP", "DEF", "MID", "FWD"][p.element_type - 1],
+    price: p.now_cost / 10,
+    total_points: p.total_points,
+    form: p.form,
+    points_per_game: p.points_per_game,
+    goals: p.goals_scored,
+    assists: p.assists,
+    ownership: `${p.selected_by_percent}%`,
+  }));
+
+  return {
+    content: [{ type: "text", text: JSON.stringify({ comparison }, null, 2) }],
+  };
+}
+
+/**
+ * Tool: Analyze players
+ */
+async function analyzePlayers(args: any): Promise<any> {
+  const data = await fetchFPL("bootstrap-static/");
+  const players = data.elements;
+  const teams = data.teams.reduce((acc: any, t: any) => ({ ...acc, [t.id]: t }), {});
+
+  let filtered = players.filter((p: any) => {
+    if (args.position) {
+      const pos = ["GKP", "DEF", "MID", "FWD"][p.element_type - 1];
+      if (pos !== args.position.toUpperCase()) return false;
+    }
+    if (args.team && !teams[p.team].name.toLowerCase().includes(args.team.toLowerCase())) {
+      return false;
+    }
+    const price = p.now_cost / 10;
+    if (args.min_price && price < args.min_price) return false;
+    if (args.max_price && price > args.max_price) return false;
+    return true;
+  });
+
+  const sortBy = args.sort_by || "total_points";
+  filtered.sort((a: any, b: any) => (b[sortBy] || 0) - (a[sortBy] || 0));
+
+  const limit = args.limit || 20;
+  const results = filtered.slice(0, limit).map((p: any) => ({
+    name: p.web_name,
+    team: teams[p.team].name,
+    position: ["GKP", "DEF", "MID", "FWD"][p.element_type - 1],
+    price: p.now_cost / 10,
+    total_points: p.total_points,
+    form: p.form,
+    ownership: `${p.selected_by_percent}%`,
+  }));
+
+  return {
+    content: [{ type: "text", text: JSON.stringify({ total: filtered.length, players: results }, null, 2) }],
+  };
+}
+
+/**
+ * Tool: Analyze player fixtures
+ */
+async function analyzePlayerFixtures(playerName: string, numFixtures = 5): Promise<any> {
+  const data = await fetchFPL("bootstrap-static/");
+  const players = data.elements;
+  const teams = data.teams.reduce((acc: any, t: any) => ({ ...acc, [t.id]: t }), {});
+
+  const player = players.find((p: any) =>
+    p.web_name.toLowerCase().includes(playerName.toLowerCase())
+  );
+  if (!player) {
+    throw new Error(`Player not found: ${playerName}`);
+  }
+
+  const teamId = player.team;
+  const fixtures = await fetchFPL("fixtures/");
+
+  const upcoming = fixtures
+    .filter((f: any) => !f.finished && (f.team_h === teamId || f.team_a === teamId))
+    .slice(0, numFixtures)
+    .map((f: any) => ({
+      opponent: teams[f.team_h === teamId ? f.team_a : f.team_h].name,
+      home: f.team_h === teamId,
+      difficulty: f.team_h === teamId ? f.team_h_difficulty : f.team_a_difficulty,
+    }));
+
+  return {
+    content: [{ type: "text", text: JSON.stringify({ player: player.web_name, fixtures: upcoming }, null, 2) }],
+  };
+}
+
+/**
+ * Tool: Get blank gameweeks
+ */
+async function getBlankGameweeks(numGameweeks = 5): Promise<any> {
+  const data = await fetchFPL("bootstrap-static/");
+  const fixtures = await fetchFPL("fixtures/");
+  const teams = data.teams;
+
+  const currentGW = data.events.find((e: any) => e.is_current);
+  if (!currentGW) {
+    throw new Error("No current gameweek found");
+  }
+
+  const blanks: any[] = [];
+  for (let i = 0; i < numGameweeks; i++) {
+    const gwId = currentGW.id + i;
+    const gwFixtures = fixtures.filter((f: any) => f.event === gwId);
+    const teamsPlaying = new Set([
+      ...gwFixtures.map((f: any) => f.team_h),
+      ...gwFixtures.map((f: any) => f.team_a),
+    ]);
+
+    const teamsNotPlaying = teams.filter((t: any) => !teamsPlaying.has(t.id));
+    if (teamsNotPlaying.length > 0) {
+      blanks.push({
+        gameweek: gwId,
+        teams_not_playing: teamsNotPlaying.map((t: any) => t.name),
+      });
+    }
+  }
+
+  return {
+    content: [{ type: "text", text: JSON.stringify({ blank_gameweeks: blanks }, null, 2) }],
+  };
+}
+
+/**
+ * Tool: Get double gameweeks
+ */
+async function getDoubleGameweeks(numGameweeks = 5): Promise<any> {
+  const data = await fetchFPL("bootstrap-static/");
+  const fixtures = await fetchFPL("fixtures/");
+  const teams = data.teams.reduce((acc: any, t: any) => ({ ...acc, [t.id]: t }), {});
+
+  const currentGW = data.events.find((e: any) => e.is_current);
+  if (!currentGW) {
+    throw new Error("No current gameweek found");
+  }
+
+  const doubles: any[] = [];
+  for (let i = 0; i < numGameweeks; i++) {
+    const gwId = currentGW.id + i;
+    const gwFixtures = fixtures.filter((f: any) => f.event === gwId);
+
+    const teamCounts: any = {};
+    gwFixtures.forEach((f: any) => {
+      teamCounts[f.team_h] = (teamCounts[f.team_h] || 0) + 1;
+      teamCounts[f.team_a] = (teamCounts[f.team_a] || 0) + 1;
+    });
+
+    const teamsWithDouble = Object.entries(teamCounts)
+      .filter(([_, count]) => (count as number) > 1)
+      .map(([teamId]) => teams[parseInt(teamId)].name);
+
+    if (teamsWithDouble.length > 0) {
+      doubles.push({
+        gameweek: gwId,
+        teams_with_double: teamsWithDouble,
+      });
+    }
+  }
+
+  return {
+    content: [{ type: "text", text: JSON.stringify({ double_gameweeks: doubles }, null, 2) }],
+  };
+}
+
+/**
+ * Tool: Analyze fixtures
+ */
+async function analyzeFixtures(team?: string, numFixtures = 5): Promise<any> {
+  const data = await fetchFPL("bootstrap-static/");
+  const fixtures = await fetchFPL("fixtures/");
+  const teams = data.teams;
+
+  if (!team) {
+    throw new Error("Team name required");
+  }
+
+  const teamData = teams.find((t: any) =>
+    t.name.toLowerCase().includes(team.toLowerCase())
+  );
+  if (!teamData) {
+    throw new Error(`Team not found: ${team}`);
+  }
+
+  const teamFixtures = fixtures
+    .filter((f: any) => !f.finished && (f.team_h === teamData.id || f.team_a === teamData.id))
+    .slice(0, numFixtures)
+    .map((f: any) => {
+      const isHome = f.team_h === teamData.id;
+      const opponent = teams.find((t: any) => t.id === (isHome ? f.team_a : f.team_h));
+      return {
+        opponent: opponent.name,
+        home: isHome,
+        difficulty: isHome ? f.team_h_difficulty : f.team_a_difficulty,
+      };
+    });
+
+  return {
+    content: [{ type: "text", text: JSON.stringify({ team: teamData.name, fixtures: teamFixtures }, null, 2) }],
+  };
+}
+
+/**
+ * Tool: Get my team
+ */
+async function getMyTeam(env: Env, gameweek?: number): Promise<any> {
+  if (!env.FPL_TEAM_ID) {
+    throw new Error("FPL_TEAM_ID not configured");
+  }
+
+  const gwParam = gameweek ? `event/${gameweek}/` : "";
+  const picks = await authenticatedFetch(`entry/${env.FPL_TEAM_ID}/event/${gameweek || "current"}/picks/`, env);
+
+  return {
+    content: [{ type: "text", text: JSON.stringify(picks, null, 2) }],
+  };
+}
+
+/**
+ * Tool: Get team
+ */
+async function getTeam(env: Env, teamId: number, gameweek?: number): Promise<any> {
+  const gwParam = gameweek ? `event/${gameweek}/` : "current";
+  const picks = await authenticatedFetch(`entry/${teamId}/event/${gwParam}/picks/`, env);
+
+  return {
+    content: [{ type: "text", text: JSON.stringify(picks, null, 2) }],
+  };
+}
+
+/**
+ * Tool: Get manager info
+ */
+async function getManagerInfo(env: Env, teamId?: number): Promise<any> {
+  const id = teamId || env.FPL_TEAM_ID;
+  if (!id) {
+    throw new Error("Team ID required");
+  }
+
+  const managerData = await authenticatedFetch(`entry/${id}/`, env);
+
+  return {
+    content: [{ type: "text", text: JSON.stringify(managerData, null, 2) }],
+  };
+}
+
+/**
+ * Tool: Get team history
+ */
+async function getTeamHistory(env: Env, teamId?: number, numGameweeks = 5): Promise<any> {
+  const id = teamId || env.FPL_TEAM_ID;
+  if (!id) {
+    throw new Error("Team ID required");
+  }
+
+  const history = await authenticatedFetch(`entry/${id}/history/`, env);
+  const recent = history.current?.slice(-numGameweeks) || [];
+
+  return {
+    content: [{ type: "text", text: JSON.stringify({ history: recent }, null, 2) }],
+  };
+}
+
+/**
+ * Tool: Get league standings
+ */
+async function getLeagueStandings(env: Env, leagueId: number): Promise<any> {
+  const standings = await authenticatedFetch(`leagues-classic/${leagueId}/standings/`, env);
+
+  return {
+    content: [{ type: "text", text: JSON.stringify(standings, null, 2) }],
+  };
+}
+
+/**
+ * Tool: Check authentication
+ */
+async function checkFPLAuthentication(env: Env): Promise<any> {
+  if (!env.FPL_EMAIL || !env.FPL_PASSWORD) {
+    return {
+      content: [{ type: "text", text: JSON.stringify({ authenticated: false, message: "Credentials not configured" }, null, 2) }],
+    };
+  }
+
+  try {
+    await authenticatedFetch("me/", env);
+    return {
+      content: [{ type: "text", text: JSON.stringify({ authenticated: true }, null, 2) }],
+    };
+  } catch (error) {
+    return {
+      content: [{ type: "text", text: JSON.stringify({ authenticated: false, error: (error as Error).message }, null, 2) }],
+    };
+  }
 }
 
 /**
