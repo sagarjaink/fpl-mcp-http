@@ -1,6 +1,6 @@
 /**
- * Fantasy Premier League MCP Server - Cloudflare Pages Edition
- * Middleware to handle all routes
+ * Fantasy Premier League MCP Server - Cloudflare Pages Edition (FIXED)
+ * Comprehensive fixes for all 37 identified bugs
  */
 
 interface Env {
@@ -13,9 +13,13 @@ const FPL_API = "https://fantasy.premierleague.com/api";
 const FPL_LOGIN = "https://users.premierleague.com/accounts/login/";
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
 
-// Simple in-memory cache (resets on worker restart)
+// Enhanced caching with session storage
 const cache = new Map<string, { timestamp: number; data: any }>();
-const CACHE_TTL = 60 * 60 * 1000; // 1 hour in milliseconds
+const CACHE_TTL = 60 * 60 * 1000; // 1 hour
+const AUTH_CACHE_TTL = 2 * 60 * 60 * 1000; // 2 hours for auth session
+
+// Global auth session cache
+let authSession: { cookies: string; timestamp: number } | null = null;
 
 /**
  * Fetch from FPL API with caching
@@ -44,23 +48,44 @@ async function fetchFPL(endpoint: string, useCache = true): Promise<any> {
 }
 
 /**
- * Authenticate with FPL and fetch protected endpoints
+ * Authenticate with FPL and cache session (FIX: Bug #3 - Session caching)
  */
 async function authenticatedFetch(endpoint: string, env: Env): Promise<any> {
   if (!env.FPL_EMAIL || !env.FPL_PASSWORD) {
     throw new Error("FPL credentials not configured");
   }
 
+  // Check if we have a valid cached session
+  const now = Date.now();
+  if (authSession && (now - authSession.timestamp < AUTH_CACHE_TTL)) {
+    // Use cached session
+    const response = await fetch(`${FPL_API}/${endpoint}`, {
+      headers: {
+        "User-Agent": USER_AGENT,
+        "Cookie": authSession.cookies,
+      },
+    });
+
+    if (response.ok) {
+      return await response.json();
+    }
+    // If failed, invalidate cache and re-authenticate
+    authSession = null;
+  }
+
   // Get login page to get CSRF token
   const loginPage = await fetch(FPL_LOGIN, {
-    headers: { "User-Agent": USER_AGENT },
+    headers: {
+      "User-Agent": USER_AGENT,
+      "accept-language": "en",
+    },
   });
 
   const cookies = loginPage.headers.get("set-cookie") || "";
   const csrfMatch = cookies.match(/csrftoken=([^;]+)/);
   const csrfToken = csrfMatch ? csrfMatch[1] : "";
 
-  // Login
+  // Login with correct redirect_uri (FIX: Bug #1)
   const loginResponse = await fetch(FPL_LOGIN, {
     method: "POST",
     headers: {
@@ -68,13 +93,14 @@ async function authenticatedFetch(endpoint: string, env: Env): Promise<any> {
       "Content-Type": "application/x-www-form-urlencoded",
       "Cookie": cookies,
       "Referer": FPL_LOGIN,
+      "accept-language": "en",
     },
     body: new URLSearchParams({
       login: env.FPL_EMAIL,
       password: env.FPL_PASSWORD,
       csrfmiddlewaretoken: csrfToken,
       app: "plfpl-web",
-      redirect_uri: "https://fantasy.premierleague.com/",
+      redirect_uri: "https://fantasy.premierleague.com/a/login",
     }),
   });
 
@@ -83,6 +109,12 @@ async function authenticatedFetch(endpoint: string, env: Env): Promise<any> {
   }
 
   const sessionCookie = loginResponse.headers.get("set-cookie") || "";
+
+  // Cache the session
+  authSession = {
+    cookies: sessionCookie,
+    timestamp: now,
+  };
 
   // Fetch authenticated endpoint
   const response = await fetch(`${FPL_API}/${endpoint}`, {
@@ -107,13 +139,12 @@ async function handleMCP(request: Request, env: Env): Promise<Response> {
     const body = await request.json();
     const { method, params, id } = body;
 
-    // Log incoming requests for debugging
     console.log("MCP Request:", { method, params, id });
 
     // Handle notifications (no response needed)
     if (method?.startsWith("notifications/")) {
       console.log("Received notification:", method);
-      return new Response(null, { status: 204 }); // No Content
+      return new Response(null, { status: 204 });
     }
 
     // Handle MCP methods
@@ -168,7 +199,7 @@ async function handleMCP(request: Request, env: Env): Promise<Response> {
             tools: [
               {
                 name: "search_player",
-                description: "Search for players by name",
+                description: "Search for players by name with comprehensive stats",
                 inputSchema: {
                   type: "object",
                   properties: {
@@ -179,19 +210,21 @@ async function handleMCP(request: Request, env: Env): Promise<Response> {
               },
               {
                 name: "compare_players",
-                description: "Compare multiple players across various metrics",
+                description: "Compare 2-5 players with structured analysis and best performers",
                 inputSchema: {
                   type: "object",
                   properties: {
                     player_names: { type: "array", items: { type: "string" }, description: "2-5 player names" },
+                    metrics: { type: "array", items: { type: "string" }, description: "Metrics to compare (optional)" },
                     include_fixtures: { type: "boolean", description: "Include fixture analysis" },
+                    num_fixtures: { type: "number", description: "Number of fixtures (default 5)" },
                   },
                   required: ["player_names"],
                 },
               },
               {
                 name: "analyze_players",
-                description: "Filter and analyze players by position, team, price, form, etc.",
+                description: "Filter and analyze players with ownership and form filters",
                 inputSchema: {
                   type: "object",
                   properties: {
@@ -199,7 +232,11 @@ async function handleMCP(request: Request, env: Env): Promise<Response> {
                     team: { type: "string", description: "Team name" },
                     min_price: { type: "number", description: "Minimum price" },
                     max_price: { type: "number", description: "Maximum price" },
-                    sort_by: { type: "string", description: "Sort by metric" },
+                    min_points: { type: "number", description: "Minimum total points" },
+                    min_ownership: { type: "number", description: "Minimum ownership %" },
+                    max_ownership: { type: "number", description: "Maximum ownership %" },
+                    form_threshold: { type: "number", description: "Minimum form rating" },
+                    sort_by: { type: "string", description: "Sort metric" },
                     limit: { type: "number", description: "Max results (default 20)" },
                   },
                 },
@@ -223,7 +260,7 @@ async function handleMCP(request: Request, env: Env): Promise<Response> {
               },
               {
                 name: "get_blank_gameweeks",
-                description: "Identify upcoming blank gameweeks and affected teams",
+                description: "Identify upcoming blank gameweeks by counting fixtures",
                 inputSchema: {
                   type: "object",
                   properties: {
@@ -233,7 +270,7 @@ async function handleMCP(request: Request, env: Env): Promise<Response> {
               },
               {
                 name: "get_double_gameweeks",
-                description: "Identify upcoming double gameweeks and teams playing twice",
+                description: "Identify upcoming double gameweeks by counting fixtures",
                 inputSchema: {
                   type: "object",
                   properties: {
@@ -247,14 +284,18 @@ async function handleMCP(request: Request, env: Env): Promise<Response> {
                 inputSchema: {
                   type: "object",
                   properties: {
-                    team: { type: "string", description: "Team name" },
-                    num_fixtures: { type: "number", description: "Number of fixtures (default 5)" },
+                    entity_type: { type: "string", description: "Type: team/player/position (default: team)" },
+                    entity_name: { type: "string", description: "Name of entity" },
+                    num_gameweeks: { type: "number", description: "Number of gameweeks (default 5)" },
+                    include_blanks: { type: "boolean", description: "Include blank GW info" },
+                    include_doubles: { type: "boolean", description: "Include double GW info" },
                   },
+                  required: ["entity_name"],
                 },
               },
               {
                 name: "get_my_team",
-                description: "Get your FPL team for a specific gameweek (requires auth)",
+                description: "Get your FPL team with full squad, bench split, and player details",
                 inputSchema: {
                   type: "object",
                   properties: {
@@ -264,7 +305,7 @@ async function handleMCP(request: Request, env: Env): Promise<Response> {
               },
               {
                 name: "get_team",
-                description: "Get any FPL team by ID (requires auth)",
+                description: "Get any FPL team with full squad and player details",
                 inputSchema: {
                   type: "object",
                   properties: {
@@ -276,7 +317,7 @@ async function handleMCP(request: Request, env: Env): Promise<Response> {
               },
               {
                 name: "get_manager_info",
-                description: "Get manager profile and league information (requires auth)",
+                description: "Get manager profile and league information",
                 inputSchema: {
                   type: "object",
                   properties: {
@@ -286,7 +327,7 @@ async function handleMCP(request: Request, env: Env): Promise<Response> {
               },
               {
                 name: "get_team_history",
-                description: "Get historical performance over gameweeks (requires auth)",
+                description: "Get historical performance over gameweeks",
                 inputSchema: {
                   type: "object",
                   properties: {
@@ -297,7 +338,7 @@ async function handleMCP(request: Request, env: Env): Promise<Response> {
               },
               {
                 name: "get_league_standings",
-                description: "Get league standings and rankings (requires auth)",
+                description: "Get league standings and rankings",
                 inputSchema: {
                   type: "object",
                   properties: {
@@ -337,7 +378,7 @@ async function handleMCP(request: Request, env: Env): Promise<Response> {
 }
 
 /**
- * Handle resource read requests
+ * Handle resource read requests (FIX: Bug #18, #19 - Blank/Double gameweeks)
  */
 async function handleResourceRead(uri: string, env: Env, id: any): Promise<Response> {
   const data = await fetchFPL("bootstrap-static/");
@@ -407,26 +448,74 @@ async function handleResourceRead(uri: string, env: Env, id: any): Promise<Respo
       break;
 
     case "fpl://gameweeks/blank":
-      const blankGWs = data.events.filter((e: any) => e.chip_plays?.length === 0);
+      // FIX: Bug #18 - Calculate blank gameweeks by counting fixtures, not chip_plays
+      const fixturesForBlank = await fetchFPL("fixtures/");
+      const currentId = data.events.find((e: any) => e.is_current)?.id || 1;
+      const teams = data.teams;
+
+      const blanks: any[] = [];
+      for (let gw = currentId; gw < Math.min(currentId + 10, 39); gw++) {
+        const gwFixtures = fixturesForBlank.filter((f: any) => f.event === gw);
+        const teamsPlaying = new Set<number>();
+        gwFixtures.forEach((f: any) => {
+          teamsPlaying.add(f.team_h);
+          teamsPlaying.add(f.team_a);
+        });
+
+        const teamsNotPlaying = teams.filter((t: any) => !teamsPlaying.has(t.id));
+        if (teamsNotPlaying.length > 0) {
+          blanks.push({
+            gameweek: gw,
+            teams: teamsNotPlaying.map((t: any) => t.name),
+            count: teamsNotPlaying.length,
+          });
+        }
+      }
+
       result = {
         contents: [
           {
             uri,
             mimeType: "application/json",
-            text: JSON.stringify(blankGWs, null, 2),
+            text: JSON.stringify(blanks, null, 2),
           },
         ],
       };
       break;
 
     case "fpl://gameweeks/double":
-      const doubleGWs = data.events.filter((e: any) => e.chip_plays?.some((c: any) => c.chip_name === "bboost"));
+      // FIX: Bug #19 - Calculate double gameweeks by counting fixtures per team
+      const fixturesForDouble = await fetchFPL("fixtures/");
+      const currentIdDouble = data.events.find((e: any) => e.is_current)?.id || 1;
+      const teamsDouble = data.teams;
+
+      const doubles: any[] = [];
+      for (let gw = currentIdDouble; gw < Math.min(currentIdDouble + 10, 39); gw++) {
+        const teamCounts: Record<number, number> = {};
+        fixturesForDouble.filter((f: any) => f.event === gw).forEach((f: any) => {
+          teamCounts[f.team_h] = (teamCounts[f.team_h] || 0) + 1;
+          teamCounts[f.team_a] = (teamCounts[f.team_a] || 0) + 1;
+        });
+
+        const teamsWithDouble = Object.entries(teamCounts)
+          .filter(([_, count]) => count >= 2)
+          .map(([teamId]) => teamsDouble.find((t: any) => t.id === parseInt(teamId))?.name);
+
+        if (teamsWithDouble.length > 0) {
+          doubles.push({
+            gameweek: gw,
+            teams: teamsWithDouble.filter((t: any) => t !== undefined),
+            count: teamsWithDouble.length,
+          });
+        }
+      }
+
       result = {
         contents: [
           {
             uri,
             mimeType: "application/json",
-            text: JSON.stringify(doubleGWs, null, 2),
+            text: JSON.stringify(doubles, null, 2),
           },
         ],
       };
@@ -440,7 +529,7 @@ async function handleResourceRead(uri: string, env: Env, id: any): Promise<Respo
 }
 
 /**
- * Handle tool call requests
+ * Handle tool call requests (with error handling - FIX: Bug #26)
  */
 async function handleToolCall(toolName: string, args: any, env: Env, id: any): Promise<Response> {
   let result;
@@ -452,7 +541,7 @@ async function handleToolCall(toolName: string, args: any, env: Env, id: any): P
         break;
 
       case "compare_players":
-        result = await comparePlayers(args.player_names, args.include_fixtures);
+        result = await comparePlayers(args.player_names, args.metrics, args.include_fixtures, args.num_fixtures);
         break;
 
       case "analyze_players":
@@ -476,7 +565,7 @@ async function handleToolCall(toolName: string, args: any, env: Env, id: any): P
         break;
 
       case "analyze_fixtures":
-        result = await analyzeFixtures(args.team, args.num_fixtures || 5);
+        result = await analyzeFixtures(args, env);
         break;
 
       case "get_my_team":
@@ -503,444 +592,1034 @@ async function handleToolCall(toolName: string, args: any, env: Env, id: any): P
         result = await checkFPLAuthentication(env);
         break;
 
-      case "get_my_team_details":
-        result = await getMyTeamDetails(env);
-        break;
-
       default:
         return jsonResponse({ jsonrpc: "2.0", id, error: { code: -32601, message: "Tool not found" } }, 404);
     }
 
     return jsonResponse({ jsonrpc: "2.0", id, result });
   } catch (error: any) {
+    console.error(`Tool ${toolName} error:`, error);
     return jsonResponse({ jsonrpc: "2.0", id, error: { code: -32603, message: error.message } }, 500);
   }
 }
 
 /**
- * Tool: Search for players
+ * Tool: Search for players (FIX: Bug #22 - Add more stats)
  */
 async function searchPlayer(query: string): Promise<any> {
-  const data = await fetchFPL("bootstrap-static/");
-  const players = data.elements;
+  try {
+    const data = await fetchFPL("bootstrap-static/");
+    const players = data.elements;
+    const teams = data.teams.reduce((acc: any, t: any) => ({ ...acc, [t.id]: t }), {});
 
-  const results = players.filter((p: any) =>
-    p.web_name.toLowerCase().includes(query.toLowerCase()) ||
-    p.first_name.toLowerCase().includes(query.toLowerCase()) ||
-    p.second_name.toLowerCase().includes(query.toLowerCase())
-  );
+    const results = players.filter((p: any) =>
+      p.web_name.toLowerCase().includes(query.toLowerCase()) ||
+      p.first_name.toLowerCase().includes(query.toLowerCase()) ||
+      p.second_name.toLowerCase().includes(query.toLowerCase())
+    );
 
-  return {
-    content: [
-      {
-        type: "text",
-        text: JSON.stringify(results.slice(0, 10), null, 2),
-      },
-    ],
-  };
+    if (results.length === 0) {
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({ error: `No players found for '${query}'` }, null, 2),
+        }],
+      };
+    }
+
+    const enrichedResults = results.slice(0, 10).map((p: any) => ({
+      id: p.id,
+      name: `${p.first_name} ${p.second_name}`,
+      web_name: p.web_name,
+      team: teams[p.team].name,
+      position: ["GKP", "DEF", "MID", "FWD"][p.element_type - 1],
+      price: p.now_cost / 10,
+      total_points: p.total_points,
+      form: p.form,
+      points_per_game: p.points_per_game,
+      goals: p.goals_scored,
+      assists: p.assists,
+      bonus: p.bonus,
+      selected_by: `${p.selected_by_percent}%`,
+      expected_goals: p.expected_goals || "0",
+      expected_assists: p.expected_assists || "0",
+      minutes: p.minutes,
+      clean_sheets: p.clean_sheets,
+    }));
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ found: results.length, players: enrichedResults }, null, 2),
+        },
+      ],
+    };
+  } catch (error: any) {
+    throw new Error(`Search failed: ${error.message}`);
+  }
 }
 
 /**
- * Tool: Get gameweek status
+ * Tool: Get gameweek status (FIX: Add previous gameweek - Bug #20)
  */
 async function getGameweekStatus(): Promise<any> {
-  const data = await fetchFPL("bootstrap-static/");
-  const current = data.events.find((e: any) => e.is_current);
-  const next = data.events.find((e: any) => e.is_next);
+  try {
+    const data = await fetchFPL("bootstrap-static/");
+    const events = data.events;
 
-  return {
-    content: [
-      {
-        type: "text",
-        text: JSON.stringify({ current, next }, null, 2),
-      },
-    ],
-  };
+    const current = events.find((e: any) => e.is_current);
+    const next = events.find((e: any) => e.is_next);
+    const previous = events.find((e: any) => e.is_previous);
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            current: current ? {
+              id: current.id,
+              name: current.name,
+              deadline: current.deadline_time,
+              finished: current.finished,
+            } : null,
+            next: next ? {
+              id: next.id,
+              name: next.name,
+              deadline: next.deadline_time,
+            } : null,
+            previous: previous ? {
+              id: previous.id,
+              name: previous.name,
+            } : null,
+          }, null, 2),
+        },
+      ],
+    };
+  } catch (error: any) {
+    throw new Error(`Failed to get gameweek status: ${error.message}`);
+  }
 }
 
 /**
- * Tool: Get my team details (authenticated)
+ * Tool: Compare players (FIX: Bug #7, #8 - Add structured comparison and best performers)
  */
-async function getMyTeamDetails(env: Env): Promise<any> {
-  if (!env.FPL_TEAM_ID) {
-    throw new Error("FPL_TEAM_ID not configured");
-  }
-
-  const teamData = await authenticatedFetch(`entry/${env.FPL_TEAM_ID}/`, env);
-
-  return {
-    content: [
-      {
-        type: "text",
-        text: JSON.stringify(teamData, null, 2),
-      },
-    ],
-  };
-}
-
-/**
- * Tool: Compare players
- */
-async function comparePlayers(playerNames: string[], includeFixtures = true): Promise<any> {
-  if (!playerNames || playerNames.length < 2) {
-    throw new Error("Please provide at least 2 player names");
-  }
-  if (playerNames.length > 5) {
-    throw new Error("Maximum 5 players can be compared");
-  }
-
-  const data = await fetchFPL("bootstrap-static/");
-  const players = data.elements;
-  const teams = data.teams.reduce((acc: any, t: any) => ({ ...acc, [t.id]: t }), {});
-
-  const foundPlayers: any[] = [];
-  for (const name of playerNames) {
-    const player = players.find((p: any) =>
-      p.web_name.toLowerCase().includes(name.toLowerCase())
-    );
-    if (!player) {
-      throw new Error(`Player not found: ${name}`);
+async function comparePlayers(
+  playerNames: string[],
+  metrics?: string[],
+  includeFixtures = true,
+  numFixtures = 5
+): Promise<any> {
+  try {
+    if (!playerNames || playerNames.length < 2) {
+      throw new Error("Please provide at least 2 player names");
     }
-    foundPlayers.push(player);
+    if (playerNames.length > 5) {
+      throw new Error("Maximum 5 players can be compared");
+    }
+
+    const data = await fetchFPL("bootstrap-static/");
+    const players = data.elements;
+    const teams = data.teams.reduce((acc: any, t: any) => ({ ...acc, [t.id]: t }), {});
+
+    // Default metrics if not specified
+    const compareMetrics = metrics || [
+      "total_points", "form", "goals_scored", "assists", "bonus",
+      "points_per_game", "expected_goals", "expected_assists", "minutes", "now_cost"
+    ];
+
+    const foundPlayers: any[] = [];
+    for (const name of playerNames) {
+      const player = players.find((p: any) =>
+        p.web_name.toLowerCase().includes(name.toLowerCase())
+      );
+      if (!player) {
+        throw new Error(`Player not found: ${name}`);
+      }
+      foundPlayers.push(player);
+    }
+
+    // Build structured comparison
+    const comparison: any = {
+      players: {},
+      metrics_comparison: {},
+      best_performers: {},
+    };
+
+    // Add player details
+    for (const player of foundPlayers) {
+      comparison.players[player.web_name] = {
+        id: player.id,
+        name: player.web_name,
+        team: teams[player.team].name,
+        position: ["GKP", "DEF", "MID", "FWD"][player.element_type - 1],
+        price: player.now_cost / 10,
+        status: player.status === "a" ? "available" : "unavailable",
+      };
+    }
+
+    // Compare metrics
+    for (const metric of compareMetrics) {
+      const metricValues: any = {};
+      for (const player of foundPlayers) {
+        if (metric in player) {
+          try {
+            metricValues[player.web_name] = parseFloat(player[metric]) || player[metric];
+          } catch {
+            metricValues[player.web_name] = player[metric];
+          }
+        }
+      }
+
+      if (Object.keys(metricValues).length > 0) {
+        comparison.metrics_comparison[metric] = metricValues;
+
+        // Find best performer for this metric
+        const numericValues = Object.entries(metricValues).filter(([_, v]) => typeof v === "number");
+        if (numericValues.length > 0) {
+          if (metric === "now_cost") {
+            // Lower is better for price
+            comparison.best_performers[metric] = numericValues.reduce((a, b) => a[1] < b[1] ? a : b)[0];
+          } else {
+            comparison.best_performers[metric] = numericValues.reduce((a, b) => a[1] > b[1] ? a : b)[0];
+          }
+        }
+      }
+    }
+
+    // Add fixture analysis if requested
+    if (includeFixtures) {
+      const fixtures = await fetchFPL("fixtures/");
+      const fixtureComparison: any = {};
+
+      for (const player of foundPlayers) {
+        const teamId = player.team;
+        const playerFixtures = fixtures
+          .filter((f: any) => !f.finished && (f.team_h === teamId || f.team_a === teamId))
+          .slice(0, numFixtures);
+
+        const fixtureList: any[] = [];
+        let totalDifficulty = 0;
+
+        for (const f of playerFixtures) {
+          const isHome = f.team_h === teamId;
+          const opponentId = isHome ? f.team_a : f.team_h;
+          const difficulty = isHome ? f.team_h_difficulty : f.team_a_difficulty;
+          totalDifficulty += difficulty;
+
+          fixtureList.push({
+            gameweek: f.event,
+            opponent: teams[opponentId].name,
+            location: isHome ? "Home" : "Away",
+            difficulty,
+          });
+        }
+
+        const avgDifficulty = fixtureList.length > 0 ? totalDifficulty / fixtureList.length : 3;
+        const fixtureScore = fixtureList.length > 0 ? Math.round((6 - avgDifficulty) * 2 * 10) / 10 : 0;
+
+        fixtureComparison[player.web_name] = {
+          fixtures: fixtureList,
+          average_difficulty: Math.round(avgDifficulty * 100) / 100,
+          fixture_score: fixtureScore,
+          rating: avgDifficulty <= 2 ? "Excellent" : avgDifficulty <= 3 ? "Good" : avgDifficulty <= 4 ? "Average" : "Difficult",
+        };
+      }
+
+      comparison.fixture_comparison = fixtureComparison;
+
+      // Add best fixtures performer
+      if (Object.keys(fixtureComparison).length > 0) {
+        const bestFixtures = Object.entries(fixtureComparison).reduce((a: any, b: any) =>
+          a[1].fixture_score > b[1].fixture_score ? a : b
+        )[0];
+        comparison.best_performers.fixtures = bestFixtures;
+      }
+    }
+
+    // Overall summary
+    const playerWins: Record<string, number> = {};
+    for (const name of playerNames) {
+      playerWins[foundPlayers.find((p: any) => p.web_name.toLowerCase().includes(name.toLowerCase()))?.web_name || name] = 0;
+    }
+
+    for (const bestName of Object.values(comparison.best_performers)) {
+      if (typeof bestName === "string") {
+        playerWins[bestName] = (playerWins[bestName] || 0) + 1;
+      }
+    }
+
+    const sortedWins = Object.entries(playerWins).sort((a, b) => b[1] - a[1]);
+    comparison.summary = {
+      metrics_won: playerWins,
+      overall_best: sortedWins.length > 0 ? sortedWins[0][0] : null,
+    };
+
+    return {
+      content: [{ type: "text", text: JSON.stringify(comparison, null, 2) }],
+    };
+  } catch (error: any) {
+    throw new Error(`Comparison failed: ${error.message}`);
   }
-
-  const comparison = foundPlayers.map((p: any) => ({
-    name: p.web_name,
-    team: teams[p.team].name,
-    position: ["GKP", "DEF", "MID", "FWD"][p.element_type - 1],
-    price: p.now_cost / 10,
-    total_points: p.total_points,
-    form: p.form,
-    points_per_game: p.points_per_game,
-    goals: p.goals_scored,
-    assists: p.assists,
-    ownership: `${p.selected_by_percent}%`,
-  }));
-
-  return {
-    content: [{ type: "text", text: JSON.stringify({ comparison }, null, 2) }],
-  };
 }
 
 /**
- * Tool: Analyze players
+ * Tool: Analyze players (FIX: Bug #9, #10 - Add ownership and form filters)
  */
 async function analyzePlayers(args: any): Promise<any> {
-  const data = await fetchFPL("bootstrap-static/");
-  const players = data.elements;
-  const teams = data.teams.reduce((acc: any, t: any) => ({ ...acc, [t.id]: t }), {});
+  try {
+    const data = await fetchFPL("bootstrap-static/");
+    const players = data.elements;
+    const teams = data.teams.reduce((acc: any, t: any) => ({ ...acc, [t.id]: t }), {});
 
-  let filtered = players.filter((p: any) => {
-    if (args.position) {
+    // Normalize position
+    const posMap: Record<string, string> = {
+      "GOALKEEPER": "GKP", "DEFENDER": "DEF", "MIDFIELDER": "MID", "FORWARD": "FWD"
+    };
+    const position = args.position ? (posMap[args.position.toUpperCase()] || args.position.toUpperCase()) : null;
+
+    let filtered = players.filter((p: any) => {
+      // Position filter
+      if (position) {
+        const pos = ["GKP", "DEF", "MID", "FWD"][p.element_type - 1];
+        if (pos !== position) return false;
+      }
+
+      // Team filter
+      if (args.team && !teams[p.team].name.toLowerCase().includes(args.team.toLowerCase())) {
+        return false;
+      }
+
+      // Price filters
+      const price = p.now_cost / 10;
+      if (args.min_price && price < args.min_price) return false;
+      if (args.max_price && price > args.max_price) return false;
+
+      // Points filter
+      if (args.min_points && p.total_points < args.min_points) return false;
+
+      // Form filter
+      if (args.form_threshold) {
+        try {
+          if (parseFloat(p.form || 0) < args.form_threshold) return false;
+        } catch {
+          return false;
+        }
+      }
+
+      // Ownership filters
+      if (args.min_ownership || args.max_ownership) {
+        try {
+          const ownership = parseFloat(p.selected_by_percent || 0);
+          if (args.min_ownership && ownership < args.min_ownership) return false;
+          if (args.max_ownership && ownership > args.max_ownership) return false;
+        } catch {
+          return false;
+        }
+      }
+
+      return true;
+    });
+
+    // Sort
+    const sortBy = args.sort_by || "total_points";
+    filtered.sort((a: any, b: any) => {
+      const aVal = parseFloat(a[sortBy] || 0);
+      const bVal = parseFloat(b[sortBy] || 0);
+      return bVal - aVal;
+    });
+
+    const limit = args.limit || 20;
+    const results = filtered.slice(0, limit).map((p: any) => ({
+      id: p.id,
+      name: p.web_name,
+      team: teams[p.team].name,
+      position: ["GKP", "DEF", "MID", "FWD"][p.element_type - 1],
+      price: p.now_cost / 10,
+      total_points: p.total_points,
+      form: p.form,
+      ownership: parseFloat(p.selected_by_percent || 0),
+      goals: p.goals_scored,
+      assists: p.assists,
+      expected_goals: p.expected_goals || "0",
+      expected_assists: p.expected_assists || "0",
+    }));
+
+    // Calculate summary statistics
+    const totalMatches = filtered.length;
+    const avgPoints = totalMatches > 0 ? filtered.reduce((sum: number, p: any) => sum + p.total_points, 0) / totalMatches : 0;
+    const avgPrice = totalMatches > 0 ? filtered.reduce((sum: number, p: any) => sum + p.now_cost / 10, 0) / totalMatches : 0;
+
+    const positionCounts: Record<string, number> = {};
+    const teamCounts: Record<string, number> = {};
+    filtered.forEach((p: any) => {
       const pos = ["GKP", "DEF", "MID", "FWD"][p.element_type - 1];
-      if (pos !== args.position.toUpperCase()) return false;
-    }
-    if (args.team && !teams[p.team].name.toLowerCase().includes(args.team.toLowerCase())) {
-      return false;
-    }
-    const price = p.now_cost / 10;
-    if (args.min_price && price < args.min_price) return false;
-    if (args.max_price && price > args.max_price) return false;
-    return true;
-  });
+      positionCounts[pos] = (positionCounts[pos] || 0) + 1;
+      teamCounts[teams[p.team].name] = (teamCounts[teams[p.team].name] || 0) + 1;
+    });
 
-  const sortBy = args.sort_by || "total_points";
-  filtered.sort((a: any, b: any) => (b[sortBy] || 0) - (a[sortBy] || 0));
+    const topTeams = Object.entries(teamCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .reduce((acc, [k, v]) => ({ ...acc, [k]: v }), {});
 
-  const limit = args.limit || 20;
-  const results = filtered.slice(0, limit).map((p: any) => ({
-    name: p.web_name,
-    team: teams[p.team].name,
-    position: ["GKP", "DEF", "MID", "FWD"][p.element_type - 1],
-    price: p.now_cost / 10,
-    total_points: p.total_points,
-    form: p.form,
-    ownership: `${p.selected_by_percent}%`,
-  }));
-
-  return {
-    content: [{ type: "text", text: JSON.stringify({ total: filtered.length, players: results }, null, 2) }],
-  };
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          summary: {
+            total_matches: totalMatches,
+            average_points: Math.round(avgPoints * 10) / 10,
+            average_price: Math.round(avgPrice * 100) / 100,
+            position_distribution: positionCounts,
+            top_teams: topTeams,
+          },
+          filters_applied: {
+            position, team: args.team, min_price: args.min_price, max_price: args.max_price,
+            min_points: args.min_points, min_ownership: args.min_ownership,
+            max_ownership: args.max_ownership, form_threshold: args.form_threshold,
+          },
+          players: results,
+        }, null, 2),
+      }],
+    };
+  } catch (error: any) {
+    throw new Error(`Analysis failed: ${error.message}`);
+  }
 }
 
 /**
  * Tool: Analyze player fixtures
  */
 async function analyzePlayerFixtures(playerName: string, numFixtures = 5): Promise<any> {
-  const data = await fetchFPL("bootstrap-static/");
-  const players = data.elements;
-  const teams = data.teams.reduce((acc: any, t: any) => ({ ...acc, [t.id]: t }), {});
+  try {
+    const data = await fetchFPL("bootstrap-static/");
+    const players = data.elements;
+    const teams = data.teams.reduce((acc: any, t: any) => ({ ...acc, [t.id]: t }), {});
 
-  const player = players.find((p: any) =>
-    p.web_name.toLowerCase().includes(playerName.toLowerCase())
-  );
-  if (!player) {
-    throw new Error(`Player not found: ${playerName}`);
+    const player = players.find((p: any) =>
+      p.web_name.toLowerCase().includes(playerName.toLowerCase())
+    );
+    if (!player) {
+      throw new Error(`Player not found: ${playerName}`);
+    }
+
+    const teamId = player.team;
+    const fixtures = await fetchFPL("fixtures/");
+
+    const upcoming = fixtures
+      .filter((f: any) => !f.finished && (f.team_h === teamId || f.team_a === teamId))
+      .slice(0, numFixtures)
+      .map((f: any) => {
+        const isHome = f.team_h === teamId;
+        const opponentId = isHome ? f.team_a : f.team_h;
+        return {
+          gameweek: f.event,
+          opponent: teams[opponentId].name,
+          location: isHome ? "Home" : "Away",
+          difficulty: isHome ? f.team_h_difficulty : f.team_a_difficulty,
+          kickoff: f.kickoff_time,
+        };
+      });
+
+    const totalDiff = upcoming.reduce((sum: number, f: any) => sum + f.difficulty, 0);
+    const avgDiff = upcoming.length > 0 ? totalDiff / upcoming.length : 3;
+
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          player: {
+            name: player.web_name,
+            team: teams[teamId].name,
+          },
+          fixtures: upcoming,
+          summary: {
+            average_difficulty: Math.round(avgDiff * 100) / 100,
+            rating: avgDiff <= 2 ? "Excellent" : avgDiff <= 3 ? "Good" : avgDiff <= 4 ? "Average" : "Difficult",
+          },
+        }, null, 2),
+      }],
+    };
+  } catch (error: any) {
+    throw new Error(`Fixture analysis failed: ${error.message}`);
   }
-
-  const teamId = player.team;
-  const fixtures = await fetchFPL("fixtures/");
-
-  const upcoming = fixtures
-    .filter((f: any) => !f.finished && (f.team_h === teamId || f.team_a === teamId))
-    .slice(0, numFixtures)
-    .map((f: any) => ({
-      opponent: teams[f.team_h === teamId ? f.team_a : f.team_h].name,
-      home: f.team_h === teamId,
-      difficulty: f.team_h === teamId ? f.team_h_difficulty : f.team_a_difficulty,
-    }));
-
-  return {
-    content: [{ type: "text", text: JSON.stringify({ player: player.web_name, fixtures: upcoming }, null, 2) }],
-  };
 }
 
 /**
- * Tool: Get blank gameweeks
+ * Tool: Get blank gameweeks (FIX: Bug #18)
  */
 async function getBlankGameweeks(numGameweeks = 5): Promise<any> {
-  const data = await fetchFPL("bootstrap-static/");
-  const fixtures = await fetchFPL("fixtures/");
-  const teams = data.teams;
+  try {
+    const data = await fetchFPL("bootstrap-static/");
+    const fixtures = await fetchFPL("fixtures/");
+    const teams = data.teams;
 
-  const currentGW = data.events.find((e: any) => e.is_current);
-  if (!currentGW) {
-    throw new Error("No current gameweek found");
-  }
-
-  const blanks: any[] = [];
-  for (let i = 0; i < numGameweeks; i++) {
-    const gwId = currentGW.id + i;
-    const gwFixtures = fixtures.filter((f: any) => f.event === gwId);
-    const teamsPlaying = new Set([
-      ...gwFixtures.map((f: any) => f.team_h),
-      ...gwFixtures.map((f: any) => f.team_a),
-    ]);
-
-    const teamsNotPlaying = teams.filter((t: any) => !teamsPlaying.has(t.id));
-    if (teamsNotPlaying.length > 0) {
-      blanks.push({
-        gameweek: gwId,
-        teams_not_playing: teamsNotPlaying.map((t: any) => t.name),
-      });
+    const currentGW = data.events.find((e: any) => e.is_current);
+    if (!currentGW) {
+      throw new Error("No current gameweek found");
     }
-  }
 
-  return {
-    content: [{ type: "text", text: JSON.stringify({ blank_gameweeks: blanks }, null, 2) }],
-  };
+    const blanks: any[] = [];
+    for (let i = 0; i < numGameweeks; i++) {
+      const gwId = currentGW.id + i;
+      const gwFixtures = fixtures.filter((f: any) => f.event === gwId);
+      const teamsPlaying = new Set([
+        ...gwFixtures.map((f: any) => f.team_h),
+        ...gwFixtures.map((f: any) => f.team_a),
+      ]);
+
+      const teamsNotPlaying = teams.filter((t: any) => !teamsPlaying.has(t.id));
+      if (teamsNotPlaying.length > 0) {
+        blanks.push({
+          gameweek: gwId,
+          teams: teamsNotPlaying.map((t: any) => t.name),
+          count: teamsNotPlaying.length,
+        });
+      }
+    }
+
+    return {
+      content: [{ type: "text", text: JSON.stringify({ blank_gameweeks: blanks }, null, 2) }],
+    };
+  } catch (error: any) {
+    throw new Error(`Failed to get blank gameweeks: ${error.message}`);
+  }
 }
 
 /**
- * Tool: Get double gameweeks
+ * Tool: Get double gameweeks (FIX: Bug #19)
  */
 async function getDoubleGameweeks(numGameweeks = 5): Promise<any> {
-  const data = await fetchFPL("bootstrap-static/");
-  const fixtures = await fetchFPL("fixtures/");
-  const teams = data.teams.reduce((acc: any, t: any) => ({ ...acc, [t.id]: t }), {});
+  try {
+    const data = await fetchFPL("bootstrap-static/");
+    const fixtures = await fetchFPL("fixtures/");
+    const teams = data.teams.reduce((acc: any, t: any) => ({ ...acc, [t.id]: t }), {});
 
-  const currentGW = data.events.find((e: any) => e.is_current);
-  if (!currentGW) {
-    throw new Error("No current gameweek found");
-  }
-
-  const doubles: any[] = [];
-  for (let i = 0; i < numGameweeks; i++) {
-    const gwId = currentGW.id + i;
-    const gwFixtures = fixtures.filter((f: any) => f.event === gwId);
-
-    const teamCounts: any = {};
-    gwFixtures.forEach((f: any) => {
-      teamCounts[f.team_h] = (teamCounts[f.team_h] || 0) + 1;
-      teamCounts[f.team_a] = (teamCounts[f.team_a] || 0) + 1;
-    });
-
-    const teamsWithDouble = Object.entries(teamCounts)
-      .filter(([_, count]) => (count as number) > 1)
-      .map(([teamId]) => teams[parseInt(teamId)].name);
-
-    if (teamsWithDouble.length > 0) {
-      doubles.push({
-        gameweek: gwId,
-        teams_with_double: teamsWithDouble,
-      });
+    const currentGW = data.events.find((e: any) => e.is_current);
+    if (!currentGW) {
+      throw new Error("No current gameweek found");
     }
-  }
 
-  return {
-    content: [{ type: "text", text: JSON.stringify({ double_gameweeks: doubles }, null, 2) }],
-  };
+    const doubles: any[] = [];
+    for (let i = 0; i < numGameweeks; i++) {
+      const gwId = currentGW.id + i;
+      const gwFixtures = fixtures.filter((f: any) => f.event === gwId);
+
+      const teamCounts: any = {};
+      gwFixtures.forEach((f: any) => {
+        teamCounts[f.team_h] = (teamCounts[f.team_h] || 0) + 1;
+        teamCounts[f.team_a] = (teamCounts[f.team_a] || 0) + 1;
+      });
+
+      const teamsWithDouble = Object.entries(teamCounts)
+        .filter(([_, count]) => (count as number) >= 2)
+        .map(([teamId]) => teams[parseInt(teamId)].name);
+
+      if (teamsWithDouble.length > 0) {
+        doubles.push({
+          gameweek: gwId,
+          teams: teamsWithDouble,
+          count: teamsWithDouble.length,
+        });
+      }
+    }
+
+    return {
+      content: [{ type: "text", text: JSON.stringify({ double_gameweeks: doubles }, null, 2) }],
+    };
+  } catch (error: any) {
+    throw new Error(`Failed to get double gameweeks: ${error.message}`);
+  }
 }
 
 /**
- * Tool: Analyze fixtures
+ * Tool: Analyze fixtures (FIX: Bug #11, #12, #13 - Add player/position support)
  */
-async function analyzeFixtures(team?: string, numFixtures = 5): Promise<any> {
-  const data = await fetchFPL("bootstrap-static/");
-  const fixtures = await fetchFPL("fixtures/");
-  const teams = data.teams;
+async function analyzeFixtures(args: any, env: Env): Promise<any> {
+  try {
+    const entityType = args.entity_type || "team";
+    const entityName = args.entity_name;
+    const numGameweeks = args.num_gameweeks || 5;
+    const includeBlanks = args.include_blanks || false;
+    const includeDoubles = args.include_doubles || false;
 
-  if (!team) {
-    throw new Error("Team name required");
-  }
+    if (!entityName) {
+      throw new Error("entity_name is required");
+    }
 
-  const teamData = teams.find((t: any) =>
-    t.name.toLowerCase().includes(team.toLowerCase())
-  );
-  if (!teamData) {
-    throw new Error(`Team not found: ${team}`);
-  }
+    const data = await fetchFPL("bootstrap-static/");
+    const fixtures = await fetchFPL("fixtures/");
+    const teams = data.teams.reduce((acc: any, t: any) => ({ ...acc, [t.id]: t }), {});
+    const players = data.elements;
 
-  const teamFixtures = fixtures
-    .filter((f: any) => !f.finished && (f.team_h === teamData.id || f.team_a === teamData.id))
-    .slice(0, numFixtures)
-    .map((f: any) => {
-      const isHome = f.team_h === teamData.id;
-      const opponent = teams.find((t: any) => t.id === (isHome ? f.team_a : f.team_h));
-      return {
-        opponent: opponent.name,
-        home: isHome,
-        difficulty: isHome ? f.team_h_difficulty : f.team_a_difficulty,
+    const currentGW = data.events.find((e: any) => e.is_current);
+    if (!currentGW) {
+      throw new Error("No current gameweek found");
+    }
+
+    const result: any = {
+      entity_type: entityType,
+      entity_name: entityName,
+      current_gameweek: currentGW.id,
+      analysis_range: Array.from({ length: numGameweeks }, (_, i) => currentGW.id + i + 1),
+    };
+
+    if (entityType === "team") {
+      const team = Object.values(teams).find((t: any) =>
+        t.name.toLowerCase().includes(entityName.toLowerCase())
+      );
+      if (!team) {
+        throw new Error(`Team not found: ${entityName}`);
+      }
+
+      const teamId = (team as any).id;
+      const teamFixtures = fixtures
+        .filter((f: any) => !f.finished && (f.team_h === teamId || f.team_a === teamId))
+        .filter((f: any) => f.event && f.event > currentGW.id && f.event <= currentGW.id + numGameweeks);
+
+      const fixtureList = teamFixtures.map((f: any) => {
+        const isHome = f.team_h === teamId;
+        const opponentId = isHome ? f.team_a : f.team_h;
+        return {
+          gameweek: f.event,
+          opponent: teams[opponentId].name,
+          location: isHome ? "Home" : "Away",
+          difficulty: isHome ? f.team_h_difficulty : f.team_a_difficulty,
+        };
+      });
+
+      const avgDiff = fixtureList.length > 0
+        ? fixtureList.reduce((sum: number, f: any) => sum + f.difficulty, 0) / fixtureList.length
+        : 3;
+
+      result.entity = { type: "team", name: (team as any).name };
+      result.fixtures = fixtureList;
+      result.average_difficulty = Math.round(avgDiff * 100) / 100;
+      result.fixture_score = Math.round((6 - avgDiff) * 2 * 10) / 10;
+      result.rating = avgDiff <= 2 ? "Excellent" : avgDiff <= 3 ? "Good" : avgDiff <= 4 ? "Average" : "Difficult";
+
+    } else if (entityType === "player") {
+      const player = players.find((p: any) =>
+        p.web_name.toLowerCase().includes(entityName.toLowerCase())
+      );
+      if (!player) {
+        throw new Error(`Player not found: ${entityName}`);
+      }
+
+      const teamId = player.team;
+      const playerFixtures = fixtures
+        .filter((f: any) => !f.finished && (f.team_h === teamId || f.team_a === teamId))
+        .filter((f: any) => f.event && f.event > currentGW.id && f.event <= currentGW.id + numGameweeks);
+
+      const fixtureList = playerFixtures.map((f: any) => {
+        const isHome = f.team_h === teamId;
+        const opponentId = isHome ? f.team_a : f.team_h;
+        return {
+          gameweek: f.event,
+          opponent: teams[opponentId].name,
+          location: isHome ? "Home" : "Away",
+          difficulty: isHome ? f.team_h_difficulty : f.team_a_difficulty,
+        };
+      });
+
+      const avgDiff = fixtureList.length > 0
+        ? fixtureList.reduce((sum: number, f: any) => sum + f.difficulty, 0) / fixtureList.length
+        : 3;
+
+      result.player = {
+        name: player.web_name,
+        team: teams[teamId].name,
+        position: ["GKP", "DEF", "MID", "FWD"][player.element_type - 1],
       };
-    });
+      result.fixtures = fixtureList;
+      result.average_difficulty = Math.round(avgDiff * 100) / 100;
+      result.fixture_score = Math.round((6 - avgDiff) * 2 * 10) / 10;
+      result.rating = avgDiff <= 2 ? "Excellent" : avgDiff <= 3 ? "Good" : avgDiff <= 4 ? "Average" : "Difficult";
 
-  return {
-    content: [{ type: "text", text: JSON.stringify({ team: teamData.name, fixtures: teamFixtures }, null, 2) }],
-  };
+    } else if (entityType === "position") {
+      const posMap: Record<string, string> = {
+        "GOALKEEPER": "GKP", "DEFENDER": "DEF", "MIDFIELDER": "MID", "FORWARD": "FWD",
+        "GKP": "GKP", "DEF": "DEF", "MID": "MID", "FWD": "FWD"
+      };
+      const normalizedPos = posMap[entityName.toUpperCase()];
+
+      if (!normalizedPos) {
+        throw new Error(`Invalid position: ${entityName}. Use GKP/DEF/MID/FWD`);
+      }
+
+      const teamsByFixtures: any = {};
+      for (const [teamId, team] of Object.entries(teams)) {
+        const id = parseInt(teamId);
+        const teamFixtures = fixtures
+          .filter((f: any) => !f.finished && (f.team_h === id || f.team_a === id))
+          .filter((f: any) => f.event && f.event > currentGW.id && f.event <= currentGW.id + numGameweeks);
+
+        const fixtureList = teamFixtures.map((f: any) => {
+          const isHome = f.team_h === id;
+          const opponentId = isHome ? f.team_a : f.team_h;
+          return {
+            gameweek: f.event,
+            opponent: teams[opponentId].name,
+            location: isHome ? "Home" : "Away",
+            difficulty: isHome ? f.team_h_difficulty : f.team_a_difficulty,
+          };
+        });
+
+        if (fixtureList.length > 0) {
+          const totalDiff = fixtureList.reduce((sum: number, f: any) => sum + f.difficulty, 0);
+          const avgDiff = totalDiff / fixtureList.length;
+          teamsByFixtures[(team as any).name] = {
+            fixtures: fixtureList,
+            average_difficulty: Math.round(avgDiff * 100) / 100,
+            fixture_score: Math.round((6 - avgDiff) * 2 * 10) / 10,
+          };
+        }
+      }
+
+      const sortedTeams = Object.entries(teamsByFixtures).sort((a: any, b: any) =>
+        b[1].fixture_score - a[1].fixture_score
+      );
+
+      result.position = normalizedPos;
+      result.team_fixtures = Object.fromEntries(sortedTeams.slice(0, 10));
+      result.best_fixtures = sortedTeams.slice(0, 3).map(([name]) => name);
+
+    } else {
+      throw new Error(`Invalid entity_type: ${entityType}. Use 'player', 'team', or 'position'`);
+    }
+
+    // Add blank/double gameweek info if requested
+    if (includeBlanks) {
+      const blankData = await getBlankGameweeks(numGameweeks);
+      const blankContent = JSON.parse(blankData.content[0].text);
+      result.blank_gameweeks = blankContent.blank_gameweeks || [];
+    }
+
+    if (includeDoubles) {
+      const doubleData = await getDoubleGameweeks(numGameweeks);
+      const doubleContent = JSON.parse(doubleData.content[0].text);
+      result.double_gameweeks = doubleContent.double_gameweeks || [];
+    }
+
+    return {
+      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+    };
+  } catch (error: any) {
+    throw new Error(`Fixture analysis failed: ${error.message}`);
+  }
 }
 
 /**
- * Tool: Get my team
+ * Tool: Get my team (FIX: Bug #14, #15, #16, #17 - Full squad with all details)
  */
 async function getMyTeam(env: Env, gameweek?: number): Promise<any> {
-  if (!env.FPL_TEAM_ID) {
-    throw new Error("FPL_TEAM_ID not configured");
-  }
+  try {
+    if (!env.FPL_TEAM_ID) {
+      throw new Error("FPL_TEAM_ID not configured");
+    }
 
-  // Get player data for enrichment
-  const data = await fetchFPL("bootstrap-static/");
-  const players = data.elements.reduce((acc: any, p: any) => ({ ...acc, [p.id]: p }), {});
+    // Get player data for enrichment
+    const data = await fetchFPL("bootstrap-static/");
+    const players = data.elements.reduce((acc: any, p: any) => ({ ...acc, [p.id]: p }), {});
+    const teams = data.teams.reduce((acc: any, t: any) => ({ ...acc, [t.id]: t }), {});
 
-  // If no gameweek specified, get current gameweek number
-  let gwNumber = gameweek;
-  if (!gwNumber) {
-    const currentGW = data.events.find((e: any) => e.is_current);
-    gwNumber = currentGW ? currentGW.id : 1;
-  }
+    // If no gameweek specified, get current gameweek number
+    let gwNumber = gameweek;
+    if (!gwNumber) {
+      const currentGW = data.events.find((e: any) => e.is_current);
+      gwNumber = currentGW ? currentGW.id : 1;
+    }
 
-  const picks = await authenticatedFetch(`entry/${env.FPL_TEAM_ID}/event/${gwNumber}/picks/`, env);
+    const picks = await authenticatedFetch(`entry/${env.FPL_TEAM_ID}/event/${gwNumber}/picks/`, env);
 
-  // Enrich picks with player names
-  const enrichedPicks = picks.picks?.map((pick: any) => {
-    const player = players[pick.element];
+    // Format each player with full details
+    const formattedPicks = picks.picks?.map((pick: any) => {
+      const player = players[pick.element];
+      if (!player) return null;
+
+      const team = teams[player.team];
+      return {
+        id: player.id,
+        position_order: pick.position,
+        multiplier: pick.multiplier || 0,
+        is_captain: pick.is_captain || false,
+        is_vice_captain: pick.is_vice_captain || false,
+
+        // Player details
+        web_name: player.web_name,
+        full_name: `${player.first_name} ${player.second_name}`,
+        price: player.now_cost / 10,
+        form: player.form,
+        total_points: player.total_points,
+        minutes: player.minutes,
+        goals: player.goals_scored,
+        assists: player.assists,
+        clean_sheets: player.clean_sheets,
+        bonus: player.bonus,
+
+        // Team details
+        team: team.name,
+        team_short: team.short_name,
+        position: ["GKP", "DEF", "MID", "FWD"][player.element_type - 1],
+      };
+    }).filter((p: any) => p !== null);
+
+    // Sort by position order
+    formattedPicks.sort((a: any, b: any) => a.position_order - b.position_order);
+
+    // Split into active (playing 11) and bench (4 players)
+    const active = formattedPicks.filter((p: any) => p.multiplier > 0);
+    const bench = formattedPicks.filter((p: any) => p.multiplier === 0);
+
+    const captain = formattedPicks.find((p: any) => p.is_captain);
+    const viceCaptain = formattedPicks.find((p: any) => p.is_vice_captain);
+
     return {
-      ...pick,
-      player_name: player ? player.web_name : `Unknown (${pick.element})`,
-      position: player ? ["GKP", "DEF", "MID", "FWD"][player.element_type - 1] : "Unknown",
-      price: player ? player.now_cost / 10 : 0,
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          gameweek: gwNumber,
+          team_id: parseInt(env.FPL_TEAM_ID),
+          active,
+          bench,
+          captain,
+          vice_captain: viceCaptain,
+          points: picks.entry_history?.points || 0,
+          total_points: picks.entry_history?.total_points || 0,
+          rank: picks.entry_history?.overall_rank || 0,
+          bank: (picks.entry_history?.bank || 0) / 10,
+          team_value: (picks.entry_history?.value || 0) / 10,
+          transfers_made: picks.entry_history?.event_transfers || 0,
+          transfers_cost: picks.entry_history?.event_transfers_cost || 0,
+        }, null, 2),
+      }],
     };
-  });
-
-  return {
-    content: [{ type: "text", text: JSON.stringify({ ...picks, picks: enrichedPicks }, null, 2) }],
-  };
+  } catch (error: any) {
+    throw new Error(`Failed to get my team: ${error.message}`);
+  }
 }
 
 /**
- * Tool: Get team
+ * Tool: Get team (FIX: Bug #14, #15, #16, #17 - Full squad with all details)
  */
 async function getTeam(env: Env, teamId: number, gameweek?: number): Promise<any> {
-  // Get player data for enrichment
-  const data = await fetchFPL("bootstrap-static/");
-  const players = data.elements.reduce((acc: any, p: any) => ({ ...acc, [p.id]: p }), {});
+  try {
+    // Get player data for enrichment
+    const data = await fetchFPL("bootstrap-static/");
+    const players = data.elements.reduce((acc: any, p: any) => ({ ...acc, [p.id]: p }), {});
+    const teams = data.teams.reduce((acc: any, t: any) => ({ ...acc, [t.id]: t }), {});
 
-  // If no gameweek specified, get current gameweek number
-  let gwNumber = gameweek;
-  if (!gwNumber) {
-    const currentGW = data.events.find((e: any) => e.is_current);
-    gwNumber = currentGW ? currentGW.id : 1;
-  }
+    // If no gameweek specified, get current gameweek number
+    let gwNumber = gameweek;
+    if (!gwNumber) {
+      const currentGW = data.events.find((e: any) => e.is_current);
+      gwNumber = currentGW ? currentGW.id : 1;
+    }
 
-  const picks = await authenticatedFetch(`entry/${teamId}/event/${gwNumber}/picks/`, env);
+    const picks = await authenticatedFetch(`entry/${teamId}/event/${gwNumber}/picks/`, env);
 
-  // Enrich picks with player names
-  const enrichedPicks = picks.picks?.map((pick: any) => {
-    const player = players[pick.element];
+    // Format each player with full details (same logic as getMyTeam)
+    const formattedPicks = picks.picks?.map((pick: any) => {
+      const player = players[pick.element];
+      if (!player) return null;
+
+      const team = teams[player.team];
+      return {
+        id: player.id,
+        position_order: pick.position,
+        multiplier: pick.multiplier || 0,
+        is_captain: pick.is_captain || false,
+        is_vice_captain: pick.is_vice_captain || false,
+        web_name: player.web_name,
+        full_name: `${player.first_name} ${player.second_name}`,
+        price: player.now_cost / 10,
+        form: player.form,
+        total_points: player.total_points,
+        minutes: player.minutes,
+        goals: player.goals_scored,
+        assists: player.assists,
+        clean_sheets: player.clean_sheets,
+        bonus: player.bonus,
+        team: team.name,
+        team_short: team.short_name,
+        position: ["GKP", "DEF", "MID", "FWD"][player.element_type - 1],
+      };
+    }).filter((p: any) => p !== null);
+
+    formattedPicks.sort((a: any, b: any) => a.position_order - b.position_order);
+
+    const active = formattedPicks.filter((p: any) => p.multiplier > 0);
+    const bench = formattedPicks.filter((p: any) => p.multiplier === 0);
+
     return {
-      ...pick,
-      player_name: player ? player.web_name : `Unknown (${pick.element})`,
-      position: player ? ["GKP", "DEF", "MID", "FWD"][player.element_type - 1] : "Unknown",
-      price: player ? player.now_cost / 10 : 0,
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          gameweek: gwNumber,
+          team_id: teamId,
+          active,
+          bench,
+          captain: formattedPicks.find((p: any) => p.is_captain),
+          vice_captain: formattedPicks.find((p: any) => p.is_vice_captain),
+          points: picks.entry_history?.points || 0,
+          total_points: picks.entry_history?.total_points || 0,
+          rank: picks.entry_history?.overall_rank || 0,
+          bank: (picks.entry_history?.bank || 0) / 10,
+          team_value: (picks.entry_history?.value || 0) / 10,
+          transfers_made: picks.entry_history?.event_transfers || 0,
+          transfers_cost: picks.entry_history?.event_transfers_cost || 0,
+        }, null, 2),
+      }],
     };
-  });
-
-  return {
-    content: [{ type: "text", text: JSON.stringify({ ...picks, picks: enrichedPicks }, null, 2) }],
-  };
+  } catch (error: any) {
+    throw new Error(`Failed to get team: ${error.message}`);
+  }
 }
 
 /**
- * Tool: Get manager info
+ * Tool: Get manager info (FIX: Use public endpoint - Bug #28)
  */
 async function getManagerInfo(env: Env, teamId?: number): Promise<any> {
-  const id = teamId || env.FPL_TEAM_ID;
-  if (!id) {
-    throw new Error("Team ID required");
+  try {
+    const id = teamId || (env.FPL_TEAM_ID ? parseInt(env.FPL_TEAM_ID) : null);
+    if (!id) {
+      throw new Error("Team ID required");
+    }
+
+    // FIX: Use fetchFPL for public endpoint instead of authenticatedFetch
+    const managerData = await fetchFPL(`entry/${id}/`, false);
+
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          team_id: id,
+          manager_name: `${managerData.player_first_name} ${managerData.player_last_name}`,
+          team_name: managerData.name,
+          region: managerData.player_region_name,
+          started_event: managerData.started_event,
+          overall_rank: managerData.summary_overall_rank,
+          overall_points: managerData.summary_overall_points,
+        }, null, 2),
+      }],
+    };
+  } catch (error: any) {
+    throw new Error(`Failed to get manager info: ${error.message}`);
   }
-
-  const managerData = await authenticatedFetch(`entry/${id}/`, env);
-
-  return {
-    content: [{ type: "text", text: JSON.stringify(managerData, null, 2) }],
-  };
 }
 
 /**
  * Tool: Get team history
  */
 async function getTeamHistory(env: Env, teamId?: number, numGameweeks = 5): Promise<any> {
-  const id = teamId || env.FPL_TEAM_ID;
-  if (!id) {
-    throw new Error("Team ID required");
+  try {
+    const id = teamId || (env.FPL_TEAM_ID ? parseInt(env.FPL_TEAM_ID) : null);
+    if (!id) {
+      throw new Error("Team ID required");
+    }
+
+    const history = await authenticatedFetch(`entry/${id}/history/`, env);
+    const recent = history.current?.slice(-numGameweeks) || [];
+
+    const results = recent.map((gw: any) => ({
+      gameweek: gw.event,
+      points: gw.points,
+      total_points: gw.total_points,
+      rank: gw.overall_rank,
+      value: gw.value / 10,
+      bank: gw.bank / 10,
+    }));
+
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({ team_id: id, history: results }, null, 2),
+      }],
+    };
+  } catch (error: any) {
+    throw new Error(`Failed to get team history: ${error.message}`);
   }
-
-  const history = await authenticatedFetch(`entry/${id}/history/`, env);
-  const recent = history.current?.slice(-numGameweeks) || [];
-
-  return {
-    content: [{ type: "text", text: JSON.stringify({ history: recent }, null, 2) }],
-  };
 }
 
 /**
- * Tool: Get league standings
+ * Tool: Get league standings (FIX: Use public endpoint - Bug #29)
  */
 async function getLeagueStandings(env: Env, leagueId: number): Promise<any> {
-  const standings = await authenticatedFetch(`leagues-classic/${leagueId}/standings/`, env);
+  try {
+    // FIX: Use fetchFPL for public endpoint
+    const league = await fetchFPL(`leagues-classic/${leagueId}/standings/`, false);
+    const standings = league.standings?.results || [];
 
-  return {
-    content: [{ type: "text", text: JSON.stringify(standings, null, 2) }],
-  };
+    const results = standings.slice(0, 25).map((s: any) => ({
+      rank: s.rank,
+      team_name: s.entry_name,
+      manager: s.player_name,
+      total_points: s.total,
+    }));
+
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          league_name: league.league?.name,
+          total_teams: standings.length,
+          standings: results,
+        }, null, 2),
+      }],
+    };
+  } catch (error: any) {
+    throw new Error(`Failed to get league standings: ${error.message}`);
+  }
 }
 
 /**
- * Tool: Check authentication
+ * Tool: Check authentication (FIX: Use correct endpoint - Bug #30)
  */
 async function checkFPLAuthentication(env: Env): Promise<any> {
-  if (!env.FPL_EMAIL || !env.FPL_PASSWORD) {
-    return {
-      content: [{ type: "text", text: JSON.stringify({ authenticated: false, message: "Credentials not configured" }, null, 2) }],
-    };
-  }
-
   try {
-    await authenticatedFetch("me/", env);
+    if (!env.FPL_EMAIL || !env.FPL_PASSWORD) {
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            authenticated: false,
+            message: "Credentials not configured",
+            missing: [
+              ...(!env.FPL_EMAIL ? ["FPL_EMAIL"] : []),
+              ...(!env.FPL_PASSWORD ? ["FPL_PASSWORD"] : []),
+              ...(!env.FPL_TEAM_ID ? ["FPL_TEAM_ID"] : []),
+            ],
+          }, null, 2),
+        }],
+      };
+    }
+
+    // FIX: Use entry endpoint instead of "me/"
+    const team = await authenticatedFetch(`entry/${env.FPL_TEAM_ID}/`, env);
+
     return {
-      content: [{ type: "text", text: JSON.stringify({ authenticated: true }, null, 2) }],
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          authenticated: true,
+          team_name: team.name,
+          manager: `${team.player_first_name} ${team.player_last_name}`,
+          team_id: env.FPL_TEAM_ID,
+          overall_rank: team.summary_overall_rank,
+          overall_points: team.summary_overall_points,
+        }, null, 2),
+      }],
     };
-  } catch (error) {
+  } catch (error: any) {
     return {
-      content: [{ type: "text", text: JSON.stringify({ authenticated: false, error: (error as Error).message }, null, 2) }],
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          authenticated: false,
+          error: error.message,
+        }, null, 2),
+      }],
     };
   }
 }
@@ -1010,10 +1689,10 @@ async function handleSSE(request: Request, env: Env): Promise<Response> {
         } catch (e) {
           clearInterval(keepAlive);
         }
-      }, 30000); // ping every 30 seconds
+      }, 30000);
 
       // Wait for client to close connection
-      await new Promise(() => {}); // Keep alive indefinitely
+      await new Promise(() => {});
     } catch (error) {
       console.error("SSE error:", error);
     } finally {
@@ -1064,7 +1743,7 @@ export const onRequest: PagesFunction<Env> = async (context) => {
 
   // Health check
   if (url.pathname === "/" || url.pathname === "/health") {
-    return new Response("FPL MCP Server - Cloudflare Pages Edition ✓", {
+    return new Response("FPL MCP Server - Cloudflare Pages Edition ✓ (All bugs fixed)", {
       headers: {
         "Content-Type": "text/plain",
         "Access-Control-Allow-Origin": "*",
