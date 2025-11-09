@@ -817,8 +817,15 @@ async function getMyTeam(env: Env, gameweek?: number): Promise<any> {
     throw new Error("FPL_TEAM_ID not configured");
   }
 
-  const gwParam = gameweek ? `event/${gameweek}/` : "";
-  const picks = await authenticatedFetch(`entry/${env.FPL_TEAM_ID}/event/${gameweek || "current"}/picks/`, env);
+  // If no gameweek specified, get current gameweek number
+  let gwNumber = gameweek;
+  if (!gwNumber) {
+    const data = await fetchFPL("bootstrap-static/");
+    const currentGW = data.events.find((e: any) => e.is_current);
+    gwNumber = currentGW ? currentGW.id : 1;
+  }
+
+  const picks = await authenticatedFetch(`entry/${env.FPL_TEAM_ID}/event/${gwNumber}/picks/`, env);
 
   return {
     content: [{ type: "text", text: JSON.stringify(picks, null, 2) }],
@@ -829,8 +836,15 @@ async function getMyTeam(env: Env, gameweek?: number): Promise<any> {
  * Tool: Get team
  */
 async function getTeam(env: Env, teamId: number, gameweek?: number): Promise<any> {
-  const gwParam = gameweek ? `event/${gameweek}/` : "current";
-  const picks = await authenticatedFetch(`entry/${teamId}/event/${gwParam}/picks/`, env);
+  // If no gameweek specified, get current gameweek number
+  let gwNumber = gameweek;
+  if (!gwNumber) {
+    const data = await fetchFPL("bootstrap-static/");
+    const currentGW = data.events.find((e: any) => e.is_current);
+    gwNumber = currentGW ? currentGW.id : 1;
+  }
+
+  const picks = await authenticatedFetch(`entry/${teamId}/event/${gwNumber}/picks/`, env);
 
   return {
     content: [{ type: "text", text: JSON.stringify(picks, null, 2) }],
