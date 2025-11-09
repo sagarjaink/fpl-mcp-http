@@ -110,6 +110,12 @@ async function handleMCP(request: Request, env: Env): Promise<Response> {
     // Log incoming requests for debugging
     console.log("MCP Request:", { method, params, id });
 
+    // Handle notifications (no response needed)
+    if (method?.startsWith("notifications/")) {
+      console.log("Received notification:", method);
+      return new Response(null, { status: 204 }); // No Content
+    }
+
     // Handle MCP methods
     switch (method) {
       case "initialize":
