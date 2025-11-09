@@ -105,68 +105,80 @@ async function authenticatedFetch(endpoint: string, env: Env): Promise<any> {
 async function handleMCP(request: Request, env: Env): Promise<Response> {
   try {
     const body = await request.json();
-    const { method, params } = body;
+    const { method, params, id } = body;
 
     // Handle MCP methods
     switch (method) {
       case "initialize":
         return jsonResponse({
-          protocolVersion: "2024-11-05",
-          capabilities: {
-            resources: {},
-            tools: {},
-          },
-          serverInfo: {
-            name: "Fantasy Premier League",
-            version: "1.0.0",
+          jsonrpc: "2.0",
+          id,
+          result: {
+            protocolVersion: "2024-11-05",
+            capabilities: {
+              resources: {},
+              tools: {},
+            },
+            serverInfo: {
+              name: "Fantasy Premier League",
+              version: "1.0.0",
+            },
           },
         });
 
       case "resources/list":
         return jsonResponse({
-          resources: [
-            { uri: "fpl://static/players", name: "All FPL Players", mimeType: "application/json" },
-            { uri: "fpl://static/teams", name: "All Premier League Teams", mimeType: "application/json" },
-            { uri: "fpl://gameweeks/current", name: "Current Gameweek", mimeType: "application/json" },
-            { uri: "fpl://gameweeks/all", name: "All Gameweeks", mimeType: "application/json" },
-            { uri: "fpl://fixtures", name: "All Fixtures", mimeType: "application/json" },
-            { uri: "fpl://gameweeks/blank", name: "Blank Gameweeks", mimeType: "application/json" },
-            { uri: "fpl://gameweeks/double", name: "Double Gameweeks", mimeType: "application/json" },
-          ],
+          jsonrpc: "2.0",
+          id,
+          result: {
+            resources: [
+              { uri: "fpl://static/players", name: "All FPL Players", mimeType: "application/json" },
+              { uri: "fpl://static/teams", name: "All Premier League Teams", mimeType: "application/json" },
+              { uri: "fpl://gameweeks/current", name: "Current Gameweek", mimeType: "application/json" },
+              { uri: "fpl://gameweeks/all", name: "All Gameweeks", mimeType: "application/json" },
+              { uri: "fpl://fixtures", name: "All Fixtures", mimeType: "application/json" },
+              { uri: "fpl://gameweeks/blank", name: "Blank Gameweeks", mimeType: "application/json" },
+              { uri: "fpl://gameweeks/double", name: "Double Gameweeks", mimeType: "application/json" },
+            ],
+          },
         });
 
       case "resources/read":
-        return await handleResourceRead(params.uri, env);
+        return await handleResourceRead(params.uri, env, id);
 
       case "tools/list":
         return jsonResponse({
-          tools: [
-            {
-              name: "search_player",
-              description: "Search for players by name",
-              inputSchema: {
-                type: "object",
-                properties: {
-                  query: { type: "string", description: "Player name to search" },
+          jsonrpc: "2.0",
+          id,
+          result: {
+            tools: [
+              {
+                name: "search_player",
+                description: "Search for players by name",
+                inputSchema: {
+                  type: "object",
+                  properties: {
+                    query: { type: "string", description: "Player name to search" },
+                  },
+                  required: ["query"],
                 },
-                required: ["query"],
               },
-            },
-            {
-              name: "get_gameweek_status",
-              description: "Get current gameweek information",
-              inputSchema: { type: "object", properties: {} },
-            },
-            {
-              name: "get_my_team_details",
-              description: "Get your FPL team details (requires auth)",
-              inputSchema: { type: "object", properties: {} },
-            },
-          ],
+              {
+                name: "get_gameweek_status",
+                description: "Get current gameweek information",
+                inputSchema: { type: "object", properties: {} },
+              },
+              {
+                name: "get_my_team_details",
+                description: "Get your FPL team details (requires auth)",
+                inputSchema: { type: "object", properties: {} },
+              },
+            ],
+          },
         });
 
       case "tools/call":
-        return await handleToolCall(params.name, params.arguments || {}, env);
+        return await handleToolCall(params.name, params.arguments || {}, env, id);
 
       default:
         return jsonResponse({ error: "Method not supported" }, 400);
@@ -179,12 +191,13 @@ async function handleMCP(request: Request, env: Env): Promise<Response> {
 /**
  * Handle resource read requests
  */
-async function handleResourceRead(uri: string, env: Env): Promise<Response> {
+async function handleResourceRead(uri: string, env: Env, id: any): Promise<Response> {
   const data = await fetchFPL("bootstrap-static/");
 
+  let result;
   switch (uri) {
     case "fpl://static/players":
-      return jsonResponse({
+      result = {
         contents: [
           {
             uri,
@@ -192,10 +205,11 @@ async function handleResourceRead(uri: string, env: Env): Promise<Response> {
             text: JSON.stringify(data.elements, null, 2),
           },
         ],
-      });
+      };
+      break;
 
     case "fpl://static/teams":
-      return jsonResponse({
+      result = {
         contents: [
           {
             uri,
@@ -203,11 +217,12 @@ async function handleResourceRead(uri: string, env: Env): Promise<Response> {
             text: JSON.stringify(data.teams, null, 2),
           },
         ],
-      });
+      };
+      break;
 
     case "fpl://gameweeks/current":
       const currentGW = data.events.find((e: any) => e.is_current);
-      return jsonResponse({
+      result = {
         contents: [
           {
             uri,
@@ -215,10 +230,11 @@ async function handleResourceRead(uri: string, env: Env): Promise<Response> {
             text: JSON.stringify(currentGW, null, 2),
           },
         ],
-      });
+      };
+      break;
 
     case "fpl://gameweeks/all":
-      return jsonResponse({
+      result = {
         contents: [
           {
             uri,
@@ -226,11 +242,12 @@ async function handleResourceRead(uri: string, env: Env): Promise<Response> {
             text: JSON.stringify(data.events, null, 2),
           },
         ],
-      });
+      };
+      break;
 
     case "fpl://fixtures":
       const fixtures = await fetchFPL("fixtures/");
-      return jsonResponse({
+      result = {
         contents: [
           {
             uri,
@@ -238,11 +255,12 @@ async function handleResourceRead(uri: string, env: Env): Promise<Response> {
             text: JSON.stringify(fixtures, null, 2),
           },
         ],
-      });
+      };
+      break;
 
     case "fpl://gameweeks/blank":
       const blankGWs = data.events.filter((e: any) => e.chip_plays?.length === 0);
-      return jsonResponse({
+      result = {
         contents: [
           {
             uri,
@@ -250,11 +268,12 @@ async function handleResourceRead(uri: string, env: Env): Promise<Response> {
             text: JSON.stringify(blankGWs, null, 2),
           },
         ],
-      });
+      };
+      break;
 
     case "fpl://gameweeks/double":
       const doubleGWs = data.events.filter((e: any) => e.chip_plays?.some((c: any) => c.chip_name === "bboost"));
-      return jsonResponse({
+      result = {
         contents: [
           {
             uri,
@@ -262,36 +281,50 @@ async function handleResourceRead(uri: string, env: Env): Promise<Response> {
             text: JSON.stringify(doubleGWs, null, 2),
           },
         ],
-      });
+      };
+      break;
 
     default:
-      return jsonResponse({ error: "Resource not found" }, 404);
+      return jsonResponse({ jsonrpc: "2.0", id, error: { code: -32602, message: "Resource not found" } }, 404);
   }
+
+  return jsonResponse({ jsonrpc: "2.0", id, result });
 }
 
 /**
  * Handle tool call requests
  */
-async function handleToolCall(toolName: string, args: any, env: Env): Promise<Response> {
-  switch (toolName) {
-    case "search_player":
-      return await searchPlayer(args.query);
+async function handleToolCall(toolName: string, args: any, env: Env, id: any): Promise<Response> {
+  let result;
 
-    case "get_gameweek_status":
-      return await getGameweekStatus();
+  try {
+    switch (toolName) {
+      case "search_player":
+        result = await searchPlayer(args.query);
+        break;
 
-    case "get_my_team_details":
-      return await getMyTeamDetails(env);
+      case "get_gameweek_status":
+        result = await getGameweekStatus();
+        break;
 
-    default:
-      return jsonResponse({ error: "Tool not found" }, 404);
+      case "get_my_team_details":
+        result = await getMyTeamDetails(env);
+        break;
+
+      default:
+        return jsonResponse({ jsonrpc: "2.0", id, error: { code: -32601, message: "Tool not found" } }, 404);
+    }
+
+    return jsonResponse({ jsonrpc: "2.0", id, result });
+  } catch (error: any) {
+    return jsonResponse({ jsonrpc: "2.0", id, error: { code: -32603, message: error.message } }, 500);
   }
 }
 
 /**
  * Tool: Search for players
  */
-async function searchPlayer(query: string): Promise<Response> {
+async function searchPlayer(query: string): Promise<any> {
   const data = await fetchFPL("bootstrap-static/");
   const players = data.elements;
 
@@ -301,52 +334,52 @@ async function searchPlayer(query: string): Promise<Response> {
     p.second_name.toLowerCase().includes(query.toLowerCase())
   );
 
-  return jsonResponse({
+  return {
     content: [
       {
         type: "text",
         text: JSON.stringify(results.slice(0, 10), null, 2),
       },
     ],
-  });
+  };
 }
 
 /**
  * Tool: Get gameweek status
  */
-async function getGameweekStatus(): Promise<Response> {
+async function getGameweekStatus(): Promise<any> {
   const data = await fetchFPL("bootstrap-static/");
   const current = data.events.find((e: any) => e.is_current);
   const next = data.events.find((e: any) => e.is_next);
 
-  return jsonResponse({
+  return {
     content: [
       {
         type: "text",
         text: JSON.stringify({ current, next }, null, 2),
       },
     ],
-  });
+  };
 }
 
 /**
  * Tool: Get my team details (authenticated)
  */
-async function getMyTeamDetails(env: Env): Promise<Response> {
+async function getMyTeamDetails(env: Env): Promise<any> {
   if (!env.FPL_TEAM_ID) {
-    return jsonResponse({ error: "FPL_TEAM_ID not configured" }, 400);
+    throw new Error("FPL_TEAM_ID not configured");
   }
 
   const teamData = await authenticatedFetch(`entry/${env.FPL_TEAM_ID}/`, env);
 
-  return jsonResponse({
+  return {
     content: [
       {
         type: "text",
         text: JSON.stringify(teamData, null, 2),
       },
     ],
-  });
+  };
 }
 
 /**
