@@ -1,0 +1,20 @@
+# Cloudflare Workers Configuration
+# Fantasy Premier League MCP Server
+
+name = "fpl-mcp-http"
+main = "src/index.ts"
+compatibility_date = "2024-11-09"
+
+# Enable Node.js APIs
+compatibility_flags = ["nodejs_compat"]
+
+# Environment variables (non-sensitive)
+# Sensitive values (FPL_EMAIL, FPL_PASSWORD) should be set via Cloudflare dashboard
+[vars]
+# FPL_TEAM_ID can be set here or in dashboard
+# FPL_TEAM_ID = "your_team_id_here"
+
+# For production deployment, set secrets in Cloudflare dashboard:
+# - FPL_EMAIL (your FPL account email)
+# - FPL_PASSWORD (your FPL password)
+# - FPL_TEAM_ID (your FPL team ID)
