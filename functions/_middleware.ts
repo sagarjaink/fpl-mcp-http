@@ -116,8 +116,13 @@ async function handleMCP(request: Request, env: Env): Promise<Response> {
           result: {
             protocolVersion: "2024-11-05",
             capabilities: {
-              resources: {},
-              tools: {},
+              resources: {
+                subscribe: false,
+                listChanged: false,
+              },
+              tools: {
+                listChanged: false,
+              },
             },
             serverInfo: {
               name: "Fantasy Premier League",
