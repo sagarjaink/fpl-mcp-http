@@ -365,6 +365,79 @@ function jsonResponse(data: any, status = 200): Response {
 }
 
 /**
+ * Handle SSE endpoint (Server-Sent Events for Claude.ai)
+ */
+async function handleSSE(request: Request, env: Env): Promise<Response> {
+  // For POST requests, handle MCP messages
+  if (request.method === "POST") {
+    return handleMCP(request, env);
+  }
+
+  // For GET requests, establish SSE connection
+  const { readable, writable } = new TransformStream();
+  const writer = writable.getWriter();
+  const encoder = new TextEncoder();
+
+  // Send SSE data helper
+  const sendEvent = async (event: string, data: any) => {
+    const message = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+    await writer.write(encoder.encode(message));
+  };
+
+  // Start the SSE stream
+  (async () => {
+    try {
+      // Send endpoint event (tells client where to send messages)
+      await sendEvent("endpoint", { url: new URL("/sse", request.url).href });
+
+      // Send server capabilities on connection
+      await sendEvent("message", {
+        jsonrpc: "2.0",
+        method: "server/initialized",
+        params: {
+          protocolVersion: "2024-11-05",
+          capabilities: {
+            resources: {},
+            tools: {},
+          },
+          serverInfo: {
+            name: "Fantasy Premier League",
+            version: "1.0.0",
+          },
+        },
+      });
+
+      // Keep connection alive with periodic pings
+      const keepAlive = setInterval(async () => {
+        try {
+          await writer.write(encoder.encode(": ping\n\n"));
+        } catch (e) {
+          clearInterval(keepAlive);
+        }
+      }, 30000); // ping every 30 seconds
+
+      // Wait for client to close connection
+      await new Promise(() => {}); // Keep alive indefinitely
+    } catch (error) {
+      console.error("SSE error:", error);
+    } finally {
+      await writer.close();
+    }
+  })();
+
+  return new Response(readable, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive",
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    },
+  });
+}
+
+/**
  * Pages Functions Middleware - handles all routes
  */
 export const onRequest: PagesFunction<Env> = async (context) => {
@@ -383,7 +456,12 @@ export const onRequest: PagesFunction<Env> = async (context) => {
     });
   }
 
-  // Handle MCP endpoint
+  // Handle SSE endpoint (for Claude.ai custom connectors)
+  if (url.pathname === "/sse") {
+    return handleSSE(request, env);
+  }
+
+  // Handle MCP endpoint (for regular HTTP MCP clients)
   if (url.pathname === "/mcp" && request.method === "POST") {
     return handleMCP(request, env);
   }
