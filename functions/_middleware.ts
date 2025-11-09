@@ -817,18 +817,32 @@ async function getMyTeam(env: Env, gameweek?: number): Promise<any> {
     throw new Error("FPL_TEAM_ID not configured");
   }
 
+  // Get player data for enrichment
+  const data = await fetchFPL("bootstrap-static/");
+  const players = data.elements.reduce((acc: any, p: any) => ({ ...acc, [p.id]: p }), {});
+
   // If no gameweek specified, get current gameweek number
   let gwNumber = gameweek;
   if (!gwNumber) {
-    const data = await fetchFPL("bootstrap-static/");
     const currentGW = data.events.find((e: any) => e.is_current);
     gwNumber = currentGW ? currentGW.id : 1;
   }
 
   const picks = await authenticatedFetch(`entry/${env.FPL_TEAM_ID}/event/${gwNumber}/picks/`, env);
 
+  // Enrich picks with player names
+  const enrichedPicks = picks.picks?.map((pick: any) => {
+    const player = players[pick.element];
+    return {
+      ...pick,
+      player_name: player ? player.web_name : `Unknown (${pick.element})`,
+      position: player ? ["GKP", "DEF", "MID", "FWD"][player.element_type - 1] : "Unknown",
+      price: player ? player.now_cost / 10 : 0,
+    };
+  });
+
   return {
-    content: [{ type: "text", text: JSON.stringify(picks, null, 2) }],
+    content: [{ type: "text", text: JSON.stringify({ ...picks, picks: enrichedPicks }, null, 2) }],
   };
 }
 
@@ -836,18 +850,32 @@ async function getMyTeam(env: Env, gameweek?: number): Promise<any> {
  * Tool: Get team
  */
 async function getTeam(env: Env, teamId: number, gameweek?: number): Promise<any> {
+  // Get player data for enrichment
+  const data = await fetchFPL("bootstrap-static/");
+  const players = data.elements.reduce((acc: any, p: any) => ({ ...acc, [p.id]: p }), {});
+
   // If no gameweek specified, get current gameweek number
   let gwNumber = gameweek;
   if (!gwNumber) {
-    const data = await fetchFPL("bootstrap-static/");
     const currentGW = data.events.find((e: any) => e.is_current);
     gwNumber = currentGW ? currentGW.id : 1;
   }
 
   const picks = await authenticatedFetch(`entry/${teamId}/event/${gwNumber}/picks/`, env);
 
+  // Enrich picks with player names
+  const enrichedPicks = picks.picks?.map((pick: any) => {
+    const player = players[pick.element];
+    return {
+      ...pick,
+      player_name: player ? player.web_name : `Unknown (${pick.element})`,
+      position: player ? ["GKP", "DEF", "MID", "FWD"][player.element_type - 1] : "Unknown",
+      price: player ? player.now_cost / 10 : 0,
+    };
+  });
+
   return {
-    content: [{ type: "text", text: JSON.stringify(picks, null, 2) }],
+    content: [{ type: "text", text: JSON.stringify({ ...picks, picks: enrichedPicks }, null, 2) }],
   };
 }
 
