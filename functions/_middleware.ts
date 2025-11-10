@@ -352,6 +352,18 @@ async function handleMCP(request: Request, env: Env): Promise<Response> {
                 description: "Test if FPL credentials are working",
                 inputSchema: { type: "object", properties: {} },
               },
+              {
+                name: "get_team_statistics",
+                description: "Get comprehensive team performance statistics (goals, clean sheets, form)",
+                inputSchema: {
+                  type: "object",
+                  properties: {
+                    team_name: { type: "string", description: "Team name (e.g., 'Arsenal', 'Liverpool')" },
+                    num_gameweeks: { type: "number", description: "Number of recent gameweeks for form (default: 5)" },
+                  },
+                  required: ["team_name"],
+                },
+              },
             ],
           },
         });
@@ -590,6 +602,10 @@ async function handleToolCall(toolName: string, args: any, env: Env, id: any): P
 
       case "check_fpl_authentication":
         result = await checkFPLAuthentication(env);
+        break;
+
+      case "get_team_statistics":
+        result = await getTeamStatistics(args.team_name, args.num_gameweeks);
         break;
 
       default:
@@ -1621,6 +1637,226 @@ async function checkFPLAuthentication(env: Env): Promise<any> {
         }, null, 2),
       }],
     };
+  }
+}
+
+/**
+ * Tool: Get team statistics (NEW)
+ */
+async function getTeamStatistics(teamName: string, numGameweeks = 5): Promise<any> {
+  try {
+    if (!teamName) {
+      throw new Error("team_name is required");
+    }
+
+    // Fetch teams and fixtures
+    const data = await fetchFPL("bootstrap-static/");
+    const fixtures = await fetchFPL("fixtures/");
+    const teams = data.teams;
+
+    // Find the team
+    const team = teams.find((t: any) =>
+      t.name.toLowerCase().includes(teamName.toLowerCase())
+    );
+
+    if (!team) {
+      throw new Error(`Team not found: ${teamName}`);
+    }
+
+    const teamId = team.id;
+
+    // Get all finished fixtures for this team
+    const teamFixtures = fixtures.filter((f: any) =>
+      f.finished && (f.team_h === teamId || f.team_a === teamId)
+    );
+
+    if (teamFixtures.length === 0) {
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            team: team.name,
+            message: "No finished fixtures found for this team yet",
+          }, null, 2),
+        }],
+      };
+    }
+
+    // Sort by gameweek
+    teamFixtures.sort((a: any, b: any) => a.event - b.event);
+
+    // Calculate season stats
+    const seasonStats = {
+      games_played: 0,
+      wins: 0,
+      draws: 0,
+      losses: 0,
+      goals_for: 0,
+      goals_against: 0,
+      clean_sheets: 0,
+      goals_per_game: 0,
+      goals_against_per_game: 0,
+      home: { played: 0, wins: 0, draws: 0, losses: 0, goals_for: 0, goals_against: 0 },
+      away: { played: 0, wins: 0, draws: 0, losses: 0, goals_for: 0, goals_against: 0 },
+    };
+
+    // Calculate recent form stats
+    const recentFixtures = teamFixtures.slice(-numGameweeks);
+    const formStats = {
+      games_played: 0,
+      wins: 0,
+      draws: 0,
+      losses: 0,
+      goals_for: 0,
+      goals_against: 0,
+      clean_sheets: 0,
+      form_string: "", // e.g., "WWDLW"
+    };
+
+    // Process all fixtures for season stats
+    teamFixtures.forEach((fixture: any) => {
+      const isHome = fixture.team_h === teamId;
+      const goalsFor = isHome ? fixture.team_h_score : fixture.team_a_score;
+      const goalsAgainst = isHome ? fixture.team_a_score : fixture.team_h_score;
+
+      seasonStats.games_played++;
+      seasonStats.goals_for += goalsFor;
+      seasonStats.goals_against += goalsAgainst;
+
+      if (goalsAgainst === 0) seasonStats.clean_sheets++;
+
+      if (goalsFor > goalsAgainst) {
+        seasonStats.wins++;
+      } else if (goalsFor === goalsAgainst) {
+        seasonStats.draws++;
+      } else {
+        seasonStats.losses++;
+      }
+
+      // Home/Away breakdown
+      if (isHome) {
+        seasonStats.home.played++;
+        seasonStats.home.goals_for += goalsFor;
+        seasonStats.home.goals_against += goalsAgainst;
+        if (goalsFor > goalsAgainst) seasonStats.home.wins++;
+        else if (goalsFor === goalsAgainst) seasonStats.home.draws++;
+        else seasonStats.home.losses++;
+      } else {
+        seasonStats.away.played++;
+        seasonStats.away.goals_for += goalsFor;
+        seasonStats.away.goals_against += goalsAgainst;
+        if (goalsFor > goalsAgainst) seasonStats.away.wins++;
+        else if (goalsFor === goalsAgainst) seasonStats.away.draws++;
+        else seasonStats.away.losses++;
+      }
+    });
+
+    // Calculate averages
+    seasonStats.goals_per_game = Math.round((seasonStats.goals_for / seasonStats.games_played) * 100) / 100;
+    seasonStats.goals_against_per_game = Math.round((seasonStats.goals_against / seasonStats.games_played) * 100) / 100;
+
+    // Process recent fixtures for form
+    const formLetters: string[] = [];
+    recentFixtures.forEach((fixture: any) => {
+      const isHome = fixture.team_h === teamId;
+      const goalsFor = isHome ? fixture.team_h_score : fixture.team_a_score;
+      const goalsAgainst = isHome ? fixture.team_a_score : fixture.team_h_score;
+
+      formStats.games_played++;
+      formStats.goals_for += goalsFor;
+      formStats.goals_against += goalsAgainst;
+
+      if (goalsAgainst === 0) formStats.clean_sheets++;
+
+      if (goalsFor > goalsAgainst) {
+        formStats.wins++;
+        formLetters.push("W");
+      } else if (goalsFor === goalsAgainst) {
+        formStats.draws++;
+        formLetters.push("D");
+      } else {
+        formStats.losses++;
+        formLetters.push("L");
+      }
+    });
+
+    formStats.form_string = formLetters.join("");
+
+    // Get recent results details
+    const recentResults = recentFixtures.map((f: any) => {
+      const isHome = f.team_h === teamId;
+      const opponent = teams.find((t: any) => t.id === (isHome ? f.team_a : f.team_h));
+      const goalsFor = isHome ? f.team_h_score : f.team_a_score;
+      const goalsAgainst = isHome ? f.team_a_score : f.team_h_score;
+      const result = goalsFor > goalsAgainst ? "W" : goalsFor === goalsAgainst ? "D" : "L";
+
+      return {
+        gameweek: f.event,
+        opponent: opponent?.name || "Unknown",
+        location: isHome ? "H" : "A",
+        score: `${goalsFor}-${goalsAgainst}`,
+        result,
+      };
+    });
+
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          team: team.name,
+          season_statistics: {
+            games_played: seasonStats.games_played,
+            record: {
+              wins: seasonStats.wins,
+              draws: seasonStats.draws,
+              losses: seasonStats.losses,
+              win_percentage: Math.round((seasonStats.wins / seasonStats.games_played) * 100),
+            },
+            goals: {
+              for: seasonStats.goals_for,
+              against: seasonStats.goals_against,
+              difference: seasonStats.goals_for - seasonStats.goals_against,
+              per_game: seasonStats.goals_per_game,
+              against_per_game: seasonStats.goals_against_per_game,
+            },
+            clean_sheets: seasonStats.clean_sheets,
+            home_record: {
+              played: seasonStats.home.played,
+              wins: seasonStats.home.wins,
+              draws: seasonStats.home.draws,
+              losses: seasonStats.home.losses,
+              goals_for: seasonStats.home.goals_for,
+              goals_against: seasonStats.home.goals_against,
+            },
+            away_record: {
+              played: seasonStats.away.played,
+              wins: seasonStats.away.wins,
+              draws: seasonStats.away.draws,
+              losses: seasonStats.away.losses,
+              goals_for: seasonStats.away.goals_for,
+              goals_against: seasonStats.away.goals_against,
+            },
+          },
+          recent_form: {
+            last_n_games: formStats.games_played,
+            form: formStats.form_string,
+            record: {
+              wins: formStats.wins,
+              draws: formStats.draws,
+              losses: formStats.losses,
+            },
+            goals: {
+              for: formStats.goals_for,
+              against: formStats.goals_against,
+            },
+            clean_sheets: formStats.clean_sheets,
+            results: recentResults,
+          },
+        }, null, 2),
+      }],
+    };
+  } catch (error: any) {
+    throw new Error(`Failed to get team statistics: ${error.message}`);
   }
 }
 
